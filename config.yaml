@@ -1,1 +1,47 @@
-//Server config
+servers:
+  - host: "127.0.0.1"
+    ports: [13265, 13266]
+    server_name: "default"
+    error_pages:
+      400: "./error_pages/400.html"
+      403: "./error_pages/403.html"
+      404: "./error_pages/404.html"
+      405: "./error_pages/405.html"
+      413: "./error_pages/413.html"
+      500: "./error_pages/500.html"
+    routes:
+      - path: "/"
+        methods: ["GET", "POST", "DELETE"]
+        root: "./www"
+        default_file: "index.html"
+        cgi_extensions: [".sh", ".php"]
+        max_body_size: 1048576 # 1MB
+        directory_listing: false
+      - path: "/test"
+        methods: ["GET"]
+        root: "./www/test"
+        default_file: "index.html"
+        cgi_extensions: []
+        max_body_size: 524288 # 512KB
+        directory_listing: true
+      - path: "/old"
+        methods: ["GET"]
+        redirect: "/new"
+  - host: "127.0.0.1"
+    ports: [13267]
+    server_name: "api"
+    error_pages:
+      400: "./error_pages/400.html"
+      403: "./error_pages/403.html"
+      404: "./error_pages/404.html"
+      405: "./error_pages/405.html"
+      413: "./error_pages/413.html"
+      500: "./error_pages/500.html"
+    routes:
+      - path: "/api"
+        methods: ["GET", "POST"]
+        root: "./www/api"
+        default_file: "api.html"
+        cgi_extensions: [".php"]
+        max_body_size: 2097152 # 2MB
+        directory_listing: false
