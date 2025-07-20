@@ -8,7 +8,22 @@ use std::time::Duration;
 struct PortListener {
     listener: TcpListener,
     token: Token,
+    name: String,
     port: u16,
+}
+
+struct Server {
+    name: String,
+    port: u16,
+}
+
+impl Server {
+    pub fn new(name: &str, port: u16) -> Self {
+        Self {
+            name: name.to_string(),
+            port,
+        }
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -16,12 +31,16 @@ fn main() -> io::Result<()> {
     let mut events = Events::with_capacity(128);
 
     // Configure which ports to listen on
-    let ports_to_listen = vec![8080, 8081, 9000];
+    let servers = vec![
+        Server::new("Web Server", 8080),
+        Server::new("API Server", 8081),
+        Server::new("Admin Server", 8082),
+    ];
     let mut listeners = Vec::new();
 
     // Create and register listeners
-    for (i, port) in ports_to_listen.iter().enumerate() {
-        let address = format!("0.0.0.0:{}", port).parse().unwrap();
+    for (i, server) in servers.iter().enumerate() {
+        let address = format!("0.0.0.0:{}", server.port).parse().unwrap();
         let mut listener = TcpListener::bind(address)?;
         let token = Token(i);
 
@@ -31,7 +50,8 @@ fn main() -> io::Result<()> {
         listeners.push(PortListener {
             listener,
             token,
-            port: *port,
+            port: server.port,
+            name: server.name.to_owned(),
         });
     }
 
