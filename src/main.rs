@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::Shutdown;
 use std::time::Duration;
-
+mod config;
+use config::*;
 struct PortListener {
     listener: TcpListener,
     token: Token,
@@ -12,47 +13,34 @@ struct PortListener {
     port: u16,
 }
 
-struct Server {
-    name: String,
-    port: u16,
-}
-
-impl Server {
-    pub fn new(name: &str, port: u16) -> Self {
-        Self {
-            name: name.to_string(),
-            port,
-        }
-    }
-}
-
 fn main() -> io::Result<()> {
+    let config = match parses_configuration_file() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e);
+            std::process::exit(1); // Stop the program
+        }
+    };
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
-
-    // Configure which ports to listen on
-    let servers = vec![
-        Server::new("Web Server", 8080),
-        Server::new("API Server", 8081),
-        Server::new("Admin Server", 8082),
-    ];
     let mut listeners = Vec::new();
 
     // Create and register listeners
-    for (i, server) in servers.iter().enumerate() {
-        let address = format!("0.0.0.0:{}", server.port).parse().unwrap();
-        let mut listener = TcpListener::bind(address)?;
-        let token = Token(i);
+    for (i, server) in config.servers.iter().enumerate() {
+        for port in server.ports.iter() {
+            let address = format!("0.0.0.0:{}", port).parse().unwrap();
+            let mut listener = TcpListener::bind(address)?;
+            let token = Token(i);
 
-        poll.registry()
-            .register(&mut listener, token, Interest::READABLE)?;
-
-        listeners.push(PortListener {
-            listener,
-            token,
-            port: server.port,
-            name: server.name.to_owned(),
-        });
+            poll.registry()
+                .register(&mut listener, token, Interest::READABLE)?;
+            listeners.push(PortListener {
+                listener,
+                token,
+                port: *port,
+                name: server.server_name.to_owned(),
+            });
+        }
     }
 
     let mut connections = HashMap::new();

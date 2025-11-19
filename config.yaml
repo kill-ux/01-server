@@ -2,6 +2,7 @@ servers:
   - host: "127.0.0.1"
     ports: [13265, 13266]
     server_name: "default"
+    max_body_size: 1048576 # 1MB
     error_pages:
       400: "./error_pages/400.html"
       403: "./error_pages/403.html"
@@ -15,14 +16,12 @@ servers:
         root: "./www"
         default_file: "index.html"
         cgi_extensions: [".sh", ".php"]
-        max_body_size: 1048576 # 1MB
         directory_listing: false
       - path: "/test"
         methods: ["GET"]
         root: "./www/test"
         default_file: "index.html"
         cgi_extensions: []
-        max_body_size: 524288 # 512KB
         directory_listing: true
       - path: "/old"
         methods: ["GET"]
@@ -30,6 +29,7 @@ servers:
   - host: "127.0.0.1"
     ports: [13267]
     server_name: "api"
+    max_body_size: 2097152 # 2MB
     error_pages:
       400: "./error_pages/400.html"
       403: "./error_pages/403.html"
@@ -43,5 +43,4 @@ servers:
         root: "./www/api"
         default_file: "api.html"
         cgi_extensions: [".php"]
-        max_body_size: 2097152 # 2MB
         directory_listing: false
