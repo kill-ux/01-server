@@ -18,7 +18,7 @@ fn main() -> io::Result<()> {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("Configuration error: {}", e);
-            std::process::exit(1); // Stop the program
+            std::process::exit(1);
         }
     };
     let mut poll = Poll::new()?;
