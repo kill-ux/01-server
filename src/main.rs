@@ -21,6 +21,7 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
     };
+
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
     let mut listeners = Vec::new();

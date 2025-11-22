@@ -15,7 +15,7 @@ pub struct Route {
     pub redirect: Option<String>,
 }
 
-#[derive(Debug, Deserialize,  Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Server {
     pub host: String,
     pub ports: Vec<u16>,
@@ -30,11 +30,51 @@ pub struct Config {
     pub servers: Vec<Server>,
 }
 
-pub fn parses_configuration_file() -> Result<Config, Box<dyn std::error::Error>> {   
+impl Config {
+    pub fn validate(&self) -> Result<(), String> {
+        for server in &self.servers {
+            if server.ports.is_empty() {
+                return Err(format!("Server {} has no ports", server.server_name));
+            }
+            for port in &server.ports {
+                if *port == 0 {
+                    return Err(format!(
+                        "Invalid port {} for server {}",
+                        port, server.server_name
+                    ));
+                }
+            }
+            for route in &server.routes {
+                if !route.path.starts_with('/') {
+                    return Err(format!("Route path {} must start with /", route.path));
+                }
+                for method in &route.methods {
+                    if !["GET", "POST", "DELETE"].contains(&method.as_str()) {
+                        return Err(format!("Invalid method {} on route {}", method, route.path));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn parses_configuration_file() -> Result<Config, Box<dyn std::error::Error>> {
     let contents = fs::read_to_string("./config.yaml")?;
     let config: Config = serde_yaml::from_str(&contents)?;
     for server in config.servers.iter() {
         println!("{}", server.host);
     }
+
+    match config.validate() {
+        Ok(_) => {
+            println!("Configuration is valid! Server can start.");
+        }
+        Err(e) => {
+            eprintln!("Configuration validation error: {}", e);
+            std::process::exit(1);
+        }
+    }
+    
     Ok(config)
 }
