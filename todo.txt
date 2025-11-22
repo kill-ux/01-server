@@ -1,5 +1,5 @@
 // parsing the http request using the content-length 
-1  -Read the start line and headers from the stream.
+1  - Read the start line and headers from the stream.
 Look for Content-Length in the headers.
 If Content-Length exists:
 Read exactly that number of bytes to get the body.

@@ -6,11 +6,20 @@ use std::net::Shutdown;
 use std::time::Duration;
 mod config;
 use config::*;
+use std::io::*;
+mod httpParser;
+use httpParser::*;
+
 struct PortListener {
     listener: TcpListener,
     token: Token,
     name: String,
     port: u16,
+}
+
+struct Connection {
+    stream: TcpStream,
+    buf: Vec<u8>,
 }
 
 fn main() -> io::Result<()> {
@@ -44,12 +53,11 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let mut connections = HashMap::new();
+    let mut connections: HashMap<Token, Connection> = HashMap::new();
     let mut next_token = listeners.len(); // Start after server tokens
 
     loop {
         poll.poll(&mut events, Some(Duration::from_millis(1000)))?;
-        dbg!(&events);
         for event in events.iter() {
             // Check if event is for one of our listeners
             if let Some(listener) = listeners.iter_mut().find(|l| l.token == event.token()) {
@@ -61,30 +69,45 @@ fn main() -> io::Result<()> {
                     listener.port,
                 )?;
             } else {
-                // Handle client connections
-                if let Some(stream) = connections.get_mut(&event.token()) {
-                    let response = concat!(
-                        "HTTP/1.1 200 OK\r\n",
-                        "Content-Length: 20\r\n",
-                        "\r\n",
-                        "<html>Hello World</html>"
-                    )
-                    .as_bytes();
-
-                    match stream.write_all(response) {
-                        Ok(_) => {
-                            println!("Sent response to client");
-                            // Keep connection open for more requests
-                            let _ = stream.shutdown(Shutdown::Both);
-                            poll.registry().deregister(stream)?;
+                if let Some(conn) = connections.get_mut(&event.token()) {
+                    // Read from the stream
+                    let mut tmp = [0u8; 4096];
+                    match conn.stream.read(&mut tmp) {
+                        // When the read returens 0 it means that the user did close the connect
+                        Ok(0) => {
+                            // connection closed
+                            poll.registry().deregister(&mut conn.stream)?;
                             connections.remove(&event.token());
+                            continue;
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                        Ok(n) => conn.buf.extend_from_slice(&tmp[..n]),
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                         Err(_) => {
                             connections.remove(&event.token());
+                            continue;
                         }
                     }
-                    println!("// ... your existing connection handling code ...");
+
+                    if let Some(request) = parse_http_request(&conn.buf) {
+                        println!("Got headers:");
+                        for (key, value) in &request.headers {
+                            println!("{}: {}", key, value);
+                        }
+
+                        println!("Partial body bytes: {:?}", request.body);
+                        // Send response
+                        let response = concat!(
+                            "HTTP/1.1 200 OK\r\n",
+                            "Content-Length: 20\r\n",
+                            "\r\n",
+                            "<html>Hello World</html>"
+                        )
+                        .as_bytes();
+                        let _ = conn.stream.write_all(response);
+                        let _ = conn.stream.shutdown(Shutdown::Both);
+                        poll.registry().deregister(&mut conn.stream)?;
+                        connections.remove(&event.token());
+                    }
                 }
             }
         }
@@ -94,7 +117,7 @@ fn main() -> io::Result<()> {
 fn accept_connections(
     server: &mut TcpListener,
     poll: &mut Poll,
-    connections: &mut HashMap<Token, TcpStream>,
+    connections: &mut HashMap<Token, Connection>,
     next_token: &mut usize,
     port: u16,
 ) -> io::Result<()> {
@@ -109,7 +132,14 @@ fn accept_connections(
                     new_token,
                     Interest::READABLE.add(Interest::WRITABLE),
                 )?;
-                connections.insert(new_token, stream);
+                connections.insert(
+                    new_token,
+                    Connection {
+                        stream,
+                        buf: Vec::new(),
+                    },
+                );
+
                 // ... rest of accept logic same as before ...
             } // ... error handling same as before ...
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
