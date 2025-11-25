@@ -73,8 +73,8 @@ fn find_headers_end(buf: &[u8]) -> Option<usize> {
 // // ============================================================================
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::config::*;
 
@@ -128,11 +128,12 @@ impl HttpProcessor {
         }
 
         // 3. Create DataProvider using the route root
-        let provider = DataProvider::new(
-            route.root.clone().unwrap_or_else(|| {
-                print!(format!("erro with the root that you config "));
-            })
-        );
+        let provider = DataProvider::new(route.root.clone().unwrap_or_else(|| {
+            panic!(
+                "Error: route {} does not have a root configured!",
+                route.path
+            )
+        }));
 
         // 4. Handle GET/POST/HEAD
         match request.method.as_str() {
@@ -143,15 +144,15 @@ impl HttpProcessor {
         }
     }
 
-    // fn handle_get(&self, request: &HttpRequest, route: &Route) -> HttpResponse {
-    //     match self.data_provider.read_file(&request.path) {
-    //         Ok(content) => {
-    //             let mime_type = self.data_provider.get_mime_type(&request.path);
-    //             HttpResponse::ok(content, mime_type)
-    //         }
-    //         Err(_) => self.not_found(),
-    //     }
-    // }
+    fn handle_get(&self, request: &HttpRequest,data_provider: &DataProvider, route: &Route) -> HttpResponse {
+        match data_provider.read_file(&request.path) {
+            Ok(content) => {
+                let mime_type = data_provider.get_mime_type(&request.path);
+                HttpResponse::ok(content, mime_type)
+            }
+            Err(_) => self.not_found(),
+        }
+    }
 
     // fn handle_post(&self, request: &HttpRequest, route: &Route) -> HttpResponse {
     //     // Example: Echo back the POST body

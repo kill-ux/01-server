@@ -1,20 +1,20 @@
-use mio::{Poll, Events, Interest, Token};
 use mio::net::{TcpListener, TcpStream};
+use mio::{Events, Interest, Poll, Token};
 
 use std::collections::HashMap;
 use std::io::{self};
 use std::net::Shutdown;
 use std::time::Duration;
 
-mod config;        // your Config loader
-mod utils;  // your HttpSession
-mod http_processor;     // your HttpProcessor (Per-route logic)
-mod http_provider;      // your DataProvider (Files, CGI, etc.)
+mod config; // your Config loader
+mod http_processor; // your HttpProcessor (Per-route logic)
+mod http_provider;
+mod utils; // your HttpSession // your DataProvider (Files, CGI, etc.)
 
 use config::*;
-use utils::sessions::*;
 use http_processor::*;
 use http_provider::*;
+use utils::sessions::*;
 
 /// A listener entry; each server port has one instance
 struct PortListener {
@@ -25,7 +25,6 @@ struct PortListener {
 }
 
 fn main() -> io::Result<()> {
-
     //----------------------------------------
     // 1. Load and validate configuration
     //----------------------------------------
@@ -52,7 +51,8 @@ fn main() -> io::Result<()> {
             let token = Token(next_token_id);
             next_token_id += 1;
 
-            poll.registry().register(&mut listener, token, Interest::READABLE)?;
+            poll.registry()
+                .register(&mut listener, token, Interest::READABLE)?;
 
             listeners.push(PortListener {
                 listener,
@@ -82,26 +82,20 @@ fn main() -> io::Result<()> {
         poll.poll(&mut events, Some(Duration::from_millis(500)))?;
 
         for event in events.iter() {
-
             //----------------------------------------
             // A) New connections (listener socket)
             //----------------------------------------
             if let Some(listener) = listeners.iter_mut().find(|l| l.token == event.token()) {
-
                 loop {
                     match listener.listener.accept() {
                         Ok((mut stream, _addr)) => {
-
                             let token = Token(next_token_id);
                             next_token_id += 1;
 
-                            poll.registry().register(
-                                &mut stream,
-                                token,
-                                Interest::READABLE,
-                            )?;
+                            poll.registry()
+                                .register(&mut stream, token, Interest::READABLE)?;
 
-                            sessions.insert(token, HttpSession::new(stream));
+                            sessions.insert(token, HttpSession::new(stream, listener.port));
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(err) => {
@@ -118,7 +112,6 @@ fn main() -> io::Result<()> {
             // B) Existing session readable
             //----------------------------------------
             if let Some(session) = sessions.get_mut(&event.token()) {
-
                 match session.read_data() {
                     Ok(0) => {
                         // client closed
@@ -130,9 +123,8 @@ fn main() -> io::Result<()> {
                     Ok(_) => {
                         // attempt to parse request
                         if let Some(request) = parse_http_request(&session.buffer) {
-
                             // Let processor choose route, root, etc.
-                            let response = processor.process_request(&request);
+                            let response = processor.process_request(&request, &session.port.to_string());
 
                             let bytes = response.to_bytes();
                             let _ = session.write_response(&bytes);
@@ -170,7 +162,6 @@ fn main() -> io::Result<()> {
 // mod http_provider;
 // use http_provider::*;
 
-
 // struct PortListener {
 //     listener: TcpListener,
 //     token: Token,
@@ -191,7 +182,7 @@ fn main() -> io::Result<()> {
 //             std::process::exit(1);
 //         }
 //     };
-    
+
 //     let data_provider = DataProvider::new("./public"); // Your web root directory
 //     let http_processor = HttpProcessor::new(data_provider);
 

@@ -6,6 +6,7 @@ use crate::http_processor::HttpRequest;
 
 /// Represents an HTTP session with a client connection
 pub struct HttpSession {
+    pub port: u16,
     pub stream: TcpStream,
     pub buffer: Vec<u8>,
     pub request: Option<HttpRequest>,
@@ -13,8 +14,9 @@ pub struct HttpSession {
 }
 
 impl HttpSession {
-    pub fn new(stream: TcpStream) -> Self {
+    pub fn new(stream: TcpStream, port: u16) -> Self {
         Self {
+            port,
             stream,
             buffer: Vec::new(),
             keep_alive: false,
