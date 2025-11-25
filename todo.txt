@@ -5,4 +5,8 @@ If Content-Length exists:
 Read exactly that number of bytes to get the body.
 After the body is fully read:
 If more bytes are available, start parsing the next HTTP message immediately.
-If Content-Length is missing (and no Transfer-Encoding: chunked is used), we might have to infer the end of the body by other means (e.g., closing the connection).
+If Content-Length is missing (and no Transfer-Encoding: chunked is used),
+ we might have to infer the end of the body by other means (e.g., closing the connection).
+
+ // learn what is : 
+ HTTPSession,DataProvider, and HTTPProcessor
