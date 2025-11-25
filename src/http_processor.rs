@@ -110,7 +110,7 @@ impl HttpProcessor {
             None => return self.not_found(),
         };
 
-        // // 1. Handle redirects
+        // 1. Handle redirects
         // if let Some(redir) = &route.redirect {
         //     return HttpResponse::redirect(redir);
         // }
