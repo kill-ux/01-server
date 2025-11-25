@@ -2,15 +2,12 @@
 
 use mio::net::TcpStream;
 use std::io::*;
-use crate::http_processor::HttpRequest;
 
 /// Represents an HTTP session with a client connection
 pub struct HttpSession {
     pub port: u16,
     pub stream: TcpStream,
     pub buffer: Vec<u8>,
-    pub request: Option<HttpRequest>,
-    pub keep_alive: bool,
 }
 
 impl HttpSession {
@@ -19,8 +16,6 @@ impl HttpSession {
             port,
             stream,
             buffer: Vec::new(),
-            keep_alive: false,
-            request: None,
         }
     }
 
