@@ -1,3 +1,5 @@
+use crate::http_provider::*;
+
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
     pub method: String,
@@ -66,112 +68,162 @@ fn find_headers_end(buf: &[u8]) -> Option<usize> {
 // // ============================================================================
 // // http_processor.rs
 // // ============================================================================
+// // ============================================================================
+// // data_provider.rs
+// // ============================================================================
 
-// use std::collections::HashMap;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::fs;
 
-// pub struct HttpProcessor {
-//     data_provider: DataProvider,
-// }
+use crate::config::*;
 
-// impl HttpProcessor {
-//     pub fn new(data_provider: DataProvider) -> Self {
-//         Self { data_provider }
-//     }
+pub struct HttpProcessor {
+    config: Config,
+}
 
-//     /// Process an HTTP request and generate a response
-//     pub fn process_request(&self, request: &HttpRequest) -> HttpResponse {
-//         match request.method.as_str() {
-//             "GET" => self.handle_get(request),
-//             "POST" => self.handle_post(request),
-//             "HEAD" => self.handle_head(request),
-//             _ => self.method_not_allowed(),
-//         }
-//     }
+impl HttpProcessor {
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
 
-//     fn handle_get(&self, request: &HttpRequest) -> HttpResponse {
-//         match self.data_provider.read_file(&request.path) {
-//             Ok(content) => {
-//                 let mime_type = self.data_provider.get_mime_type(&request.path);
-//                 HttpResponse::ok(content, mime_type)
-//             }
-//             Err(_) => self.not_found(),
-//         }
-//     }
+    /// Find the correct server + route for this request
+    fn find_route<'a>(&'a self, host: &str, path: &str) -> Option<(&'a Server, &'a Route)> {
+        let mut best_match: Option<(&Server, &Route)> = None;
+        let mut best_len = 0;
 
-//     fn handle_post(&self, request: &HttpRequest) -> HttpResponse {
-//         // Example: Echo back the POST body
-//         let response_body = format!(
-//             "Received POST to {} with {} bytes",
-//             request.path,
-//             request.body.len()
-//         );
-//         HttpResponse::ok(response_body.into_bytes(), "text/plain")
-//     }
+        for server in &self.config.servers {
+            if server.host != host {
+                continue;
+            }
 
-//     fn handle_head(&self, request: &HttpRequest) -> HttpResponse {
-//         if self.data_provider.file_exists(&request.path) {
-//             let mime_type = self.data_provider.get_mime_type(&request.path);
-//             HttpResponse::ok(Vec::new(), mime_type) // Empty body for HEAD
-//         } else {
-//             self.not_found()
-//         }
-//     }
+            for route in &server.routes {
+                if path.starts_with(&route.path) {
+                    let len = route.path.len();
+                    if len > best_len {
+                        best_len = len;
+                        best_match = Some((server, route));
+                    }
+                }
+            }
+        }
 
-//     fn not_found(&self) -> HttpResponse {
-//         HttpResponse {
-//             status_code: 404,
-//             status_text: "Not Found".to_string(),
-//             headers: HashMap::new(),
-//             body: b"<html><body><h1>404 Not Found</h1></body></html>".to_vec(),
-//         }
-//     }
+        best_match
+    }
 
-//     fn method_not_allowed(&self) -> HttpResponse {
-//         HttpResponse {
-//             status_code: 405,
-//             status_text: "Method Not Allowed".to_string(),
-//             headers: HashMap::new(),
-//             body: b"<html><body><h1>405 Method Not Allowed</h1></body></html>".to_vec(),
-//         }
-//     }
-// }
+    pub fn process_request(&self, request: &HttpRequest, host: &str) -> HttpResponse {
+        let (_server, route) = match self.find_route(host, &request.path) {
+            Some(r) => r,
+            None => return self.not_found(),
+        };
 
-// pub struct HttpResponse {
-//     pub status_code: u16,
-//     pub status_text: String,
-//     pub headers: HashMap<String, String>,
-//     pub body: Vec<u8>,
-// }
+        // // 1. Handle redirects
+        // if let Some(redir) = &route.redirect {
+        //     return HttpResponse::redirect(redir);
+        // }
 
-// impl HttpResponse {
-//     pub fn ok(body: Vec<u8>, content_type: &str) -> Self {
-//         let mut headers = HashMap::new();
-//         headers.insert("Content-Type".to_string(), content_type.to_string());
-//         headers.insert("Content-Length".to_string(), body.len().to_string());
+        // 2. Check allowed methods
+        if !route.methods.contains(&request.method) {
+            return self.method_not_allowed();
+        }
 
-//         Self {
-//             status_code: 200,
-//             status_text: "OK".to_string(),
-//             headers,
-//             body,
-//         }
-//     }
+        // 3. Create DataProvider using the route root
+        let provider = DataProvider::new(
+            route.root.clone().unwrap_or_else(|| {
+                print!(format!("erro with the root that you config "));
+            })
+        );
 
-//     /// Convert response to bytes for sending over the network
-//     pub fn to_bytes(&self) -> Vec<u8> {
-//         let mut response = format!(
-//             "HTTP/1.1 {} {}\r\n",
-//             self.status_code, self.status_text
-//         );
+        // 4. Handle GET/POST/HEAD
+        match request.method.as_str() {
+            "GET" => self.handle_get(request, &provider, route),
+            // "POST" => self.handle_post(request, &provider, route),
+            // "HEAD" => self.handle_head(request, &provider, route),
+            _ => self.method_not_allowed(),
+        }
+    }
 
-//         for (key, value) in &self.headers {
-//             response.push_str(&format!("{}: {}\r\n", key, value));
-//         }
+    // fn handle_get(&self, request: &HttpRequest, route: &Route) -> HttpResponse {
+    //     match self.data_provider.read_file(&request.path) {
+    //         Ok(content) => {
+    //             let mime_type = self.data_provider.get_mime_type(&request.path);
+    //             HttpResponse::ok(content, mime_type)
+    //         }
+    //         Err(_) => self.not_found(),
+    //     }
+    // }
 
-//         response.push_str("\r\n");
+    // fn handle_post(&self, request: &HttpRequest, route: &Route) -> HttpResponse {
+    //     // Example: Echo back the POST body
+    //     let response_body = format!(
+    //         "Received POST to {} with {} bytes",
+    //         request.path,
+    //         request.body.len()
+    //     );
+    //     HttpResponse::ok(response_body.into_bytes(), "text/plain")
+    // }
 
-//         let mut bytes = response.into_bytes();
-//         bytes.extend_from_slice(&self.body);
-//         bytes
-//     }
-// }
+    // fn handle_head(&self, request: &HttpRequest, route: &Route) -> HttpResponse {
+    //     if self.data_provider.file_exists(&request.path) {
+    //         let mime_type = self.data_provider.get_mime_type(&request.path);
+    //         HttpResponse::ok(Vec::new(), mime_type) // Empty body for HEAD
+    //     } else {
+    //         self.not_found()
+    //     }
+    // }
+
+    fn not_found(&self) -> HttpResponse {
+        HttpResponse {
+            status_code: 404,
+            status_text: "Not Found".to_string(),
+            headers: HashMap::new(),
+            body: b"<html><body><h1>404 Not Found</h1></body></html>".to_vec(),
+        }
+    }
+
+    fn method_not_allowed(&self) -> HttpResponse {
+        HttpResponse {
+            status_code: 405,
+            status_text: "Method Not Allowed".to_string(),
+            headers: HashMap::new(),
+            body: b"<html><body><h1>405 Method Not Allowed</h1></body></html>".to_vec(),
+        }
+    }
+}
+
+pub struct HttpResponse {
+    pub status_code: u16,
+    pub status_text: String,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    pub fn ok(body: Vec<u8>, content_type: &str) -> Self {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), content_type.to_string());
+        headers.insert("Content-Length".to_string(), body.len().to_string());
+
+        Self {
+            status_code: 200,
+            status_text: "OK".to_string(),
+            headers,
+            body,
+        }
+    }
+
+    /// Convert response to bytes for sending over the network
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
+
+        for (key, value) in &self.headers {
+            response.push_str(&format!("{}: {}\r\n", key, value));
+        }
+
+        response.push_str("\r\n");
+
+        let mut bytes = response.into_bytes();
+        bytes.extend_from_slice(&self.body);
+        bytes
+    }
+}

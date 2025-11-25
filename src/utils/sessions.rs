@@ -1,5 +1,9 @@
 // Session management
 
+use mio::net::TcpStream;
+use std::io::*;
+use crate::http_processor::HttpRequest;
+
 /// Represents an HTTP session with a client connection
 pub struct HttpSession {
     pub stream: TcpStream,

@@ -10,3 +10,20 @@ If Content-Length is missing (and no Transfer-Encoding: chunked is used),
 
  // learn what is : 
  HTTPSession,DataProvider, and HTTPProcessor
+
+ TCP Stream
+   │
+   ▼
+[HTTPSession]  — reads raw bytes, parses HTTP
+   │  produces Request
+   ▼
+[HTTPProcessor] — routing, business logic, builds Response
+   │  may request data
+   ▼
+[DataProvider] — reads files / database / templates
+   │ returns data
+   ▼
+[HTTPProcessor] — finishes response
+   │
+   ▼
+[HTTPSession] — writes response back to client
