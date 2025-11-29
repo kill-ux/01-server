@@ -40,7 +40,7 @@ impl DataProvider {
         full_path.exists() && full_path.is_file()
     }
 
-    // Get MIME type for a file
+    ////////// Get MIME type for a file
     pub fn get_mime_type(&self, path: &str) -> &'static str {
         let extension = Path::new(path)
             .extension()
