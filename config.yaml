@@ -1,0 +1,4 @@
+servers:
+  - host: 127.0.0.1
+    ports: [13265, 13266]
+    server_name: default
