@@ -125,7 +125,7 @@ fn main() -> io::Result<()> {
                         // attempt to parse request
                         if let Some(request) = parse_http_request(&session.buffer) {
                             // Let processor choose route, root, etc.
-                            let response = processor.process_request(&request, &session.port.to_string());
+                            let response = processor.process_request(&request, &session.port.to_string(), &session.);
 
                             let bytes = response.to_bytes();
                             let _ = session.write_response(&bytes);

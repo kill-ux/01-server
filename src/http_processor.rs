@@ -7,6 +7,8 @@ pub struct HttpRequest {
     pub version: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
 }
 
 pub fn parse_http_request(buf: &[u8]) -> Option<HttpRequest> {
@@ -42,19 +44,37 @@ pub fn parse_http_request(buf: &[u8]) -> Option<HttpRequest> {
         .and_then(|(_, v)| v.parse::<usize>().ok())
         .unwrap_or(0);
 
+    let (host, port) = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Host"))
+        .map(|(_, v)| {
+            let mut parts = v.split(':');
+            (
+                Some(parts.next().unwrap_or("").to_string()),
+                Some(
+                    parts
+                        .next()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(80),
+                ),
+            )
+        })
+        .unwrap_or((None, None));
+
     // Check if we have the full body yet
     if body_bytes.len() < content_length {
         return None; // Not enough bytes yet
     }
 
     let body = body_bytes[..content_length].to_vec();
-
     Some(HttpRequest {
         method,
         path,
         version,
         headers,
         body,
+        host,
+        port,
     })
 }
 
@@ -80,23 +100,20 @@ impl HttpProcessor {
         Self { config }
     }
 
-    /// Find the correct server + route for this request
-    fn find_route<'a>(&'a self, host: &str, path: &str) -> Option<(&'a Server, &'a Route)> {
+    fn find_route<'a>(&'a self, port: &str, path: &str) -> Option<(&'a Server, &'a Route)> {
         let mut best_match: Option<(&Server, &Route)> = None;
         let mut best_len = 0;
 
         for server in &self.config.servers {
-            if server.host != host {
+            if server.host != port {
+                println!("{}", port);
+                println!("{}", server.host);
                 continue;
             }
 
             for route in &server.routes {
-                if path.starts_with(&route.path) {
-                    let len = route.path.len();
-                    if len > best_len {
-                        best_len = len;
-                        best_match = Some((server, route));
-                    }
+                if path == &route.path {
+                    best_match = Some((server, route));
                 }
             }
         }
@@ -105,15 +122,17 @@ impl HttpProcessor {
     }
 
     pub fn process_request(&self, request: &HttpRequest, host: &str) -> HttpResponse {
-        let (_server, route) = match self.find_route(host, &request.path) {
+        let (_server, route) = match self.find_route(host, &request) {
             Some(r) => r,
-            None => return self.not_found(),
+            None => {
+                return { self.not_found() };
+            }
         };
 
-        // 1. Handle redirects
-        // if let Some(redir) = &route.redirect {
-        //     return HttpResponse::redirect(redir);
-        // }
+        //1. Handle redirects
+        if let Some(redir) = &route.redirect {
+            return HttpResponse::redirect(redir);
+        }
 
         // 2. Check allowed methods
         if !route.methods.contains(&request.method) {
@@ -137,13 +156,21 @@ impl HttpProcessor {
         }
     }
 
-    fn handle_get(&self, request: &HttpRequest,data_provider: &DataProvider, route: &Route) -> HttpResponse {
+    fn handle_get(
+        &self,
+        request: &HttpRequest,
+        data_provider: &DataProvider,
+        route: &Route,
+    ) -> HttpResponse {
         match data_provider.read_file(&request.path) {
             Ok(content) => {
                 let mime_type = data_provider.get_mime_type(&request.path);
                 HttpResponse::ok(content, mime_type)
             }
-            Err(_) => self.not_found(),
+            Err(_) => {
+                println!("waaaaaaaaaaaaaaaaaaaaaaaaaa3");
+                self.not_found()
+            }
         }
     }
 
@@ -219,5 +246,18 @@ impl HttpResponse {
         let mut bytes = response.into_bytes();
         bytes.extend_from_slice(&self.body);
         bytes
+    }
+
+    pub fn redirect(location: &str) -> Self {
+        let mut headers = HashMap::new();
+        headers.insert("Location".to_string(), location.to_string());
+        headers.insert("Content-Length".to_string(), "0".to_string());
+
+        Self {
+            status_code: 302,
+            status_text: "Found".to_string(),
+            headers,
+            body: Vec::new(), // no body needed
+        }
     }
 }

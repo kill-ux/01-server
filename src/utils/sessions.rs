@@ -34,7 +34,8 @@ impl HttpSession {
 
     /// Write response to the stream
     pub fn write_response(&mut self, response: &[u8]) -> std::io::Result<()> {
-        self.stream.write_all(response)
+        self.stream.write_all(response);
+        self.stream.flush()
     }
 
     /// Clear the buffer after processing
