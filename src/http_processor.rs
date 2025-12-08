@@ -100,14 +100,12 @@ impl HttpProcessor {
         Self { config }
     }
 
-    fn find_route<'a>(&'a self, port: &str, path: &str) -> Option<(&'a Server, &'a Route)> {
+    fn find_route<'a>(&'a self, port: &u16,host: &str, path: &str) -> Option<(&'a Server, &'a Route)> {
         let mut best_match: Option<(&Server, &Route)> = None;
         let mut best_len = 0;
 
         for server in &self.config.servers {
-            if server.host != port {
-                println!("{}", port);
-                println!("{}", server.host);
+            if server.host != host && !server.ports.contains(port) {
                 continue;
             }
 
@@ -121,8 +119,8 @@ impl HttpProcessor {
         best_match
     }
 
-    pub fn process_request(&self, request: &HttpRequest, host: &str) -> HttpResponse {
-        let (_server, route) = match self.find_route(host, &request) {
+    pub fn process_request(&self, request: &HttpRequest, port: &u16, host: &str) -> HttpResponse {
+        let (_server, route) = match self.find_route(port,host, &request.path) {
             Some(r) => r,
             None => {
                 return { self.not_found() };

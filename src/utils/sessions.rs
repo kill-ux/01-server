@@ -6,14 +6,16 @@ use std::io::*;
 /// Represents an HTTP session with a client connection
 pub struct HttpSession {
     pub port: u16,
+    pub host: String,
     pub stream: TcpStream,
     pub buffer: Vec<u8>,
 }
 
 impl HttpSession {
-    pub fn new(stream: TcpStream, port: u16) -> Self {
+    pub fn new(stream: TcpStream, port: u16, host: String) -> Self {
         Self {
             port,
+            host,
             stream,
             buffer: Vec::new(),
         }

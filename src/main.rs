@@ -18,6 +18,7 @@ use utils::sessions::*;
 
 /// A listener entry; each server port has one instance
 struct PortListener {
+    host: String,
     listener: TcpListener,
     token: Token,
     port: u16,
@@ -53,8 +54,9 @@ fn main() -> io::Result<()> {
 
             poll.registry()
                 .register(&mut listener, token, Interest::READABLE)?;
-
+            
             listeners.push(PortListener {
+                host: server.host.clone(),
                 listener,
                 token,
                 port: *port,
@@ -96,7 +98,7 @@ fn main() -> io::Result<()> {
                             poll.registry()
                                 .register(&mut stream, token, Interest::READABLE)?;
 
-                            sessions.insert(token, HttpSession::new(stream, listener.port));
+                            sessions.insert(token, HttpSession::new(stream, listener.port, listener.host.clone()));
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(err) => {
@@ -125,7 +127,7 @@ fn main() -> io::Result<()> {
                         // attempt to parse request
                         if let Some(request) = parse_http_request(&session.buffer) {
                             // Let processor choose route, root, etc.
-                            let response = processor.process_request(&request, &session.port.to_string(), &session.);
+                            let response = processor.process_request(&request, &session.port, &session.host);
 
                             let bytes = response.to_bytes();
                             let _ = session.write_response(&bytes);

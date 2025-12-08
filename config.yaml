@@ -2,14 +2,14 @@ servers:
   - host: "127.0.0.1"
     ports: [13265, 13266]
     server_name: "default"
-    # max_body_size: 1048576 # 1MB
-    # error_pages:
-    #   400: "./error_pages/400.html"
-    #   403: "./error_pages/403.html"
-    #   404: "./error_pages/404.html"
-    #   405: "./error_pages/405.html"
-    #   413: "./error_pages/413.html"
-    #   500: "./error_pages/500.html"
+    max_body_size: 1048576 # 1MB
+    error_pages:
+      400: "./error_pages/400.html"
+      403: "./error_pages/403.html"
+      404: "./error_pages/404.html"
+      405: "./error_pages/405.html"
+      413: "./error_pages/413.html"
+      500: "./error_pages/500.html"
     routes:
       # - path: "/"
       #   methods: ["GET", "POST", "DELETE"]
@@ -26,21 +26,18 @@ servers:
       - path: "/old"
         methods: ["GET"]
         redirect: "https://www.google.com/"
-  # - host: "127.0.0.1"
-  #   ports: [13267]
-  #   server_name: "api"
-  #   max_body_size: 2097152 # 2MB
-  #   error_pages:
-  #     400: "./error_pages/400.html"
-  #     403: "./error_pages/403.html"
-  #     404: "./error_pages/404.html"
-  #     405: "./error_pages/405.html"
-  #     413: "./error_pages/413.html"
-  #     500: "./error_pages/500.html"
-  #   routes:
-  #     - path: "/api"
-  #       methods: ["GET", "POST"]
-  #       root: "./www/api"
-  #       default_file: "api.html"
-  #       cgi_extensions: [".php"]
-  #       directory_listing: false
+  - host: "127.0.0.1"
+    ports: [13268]
+    server_name: "api"
+    # max_body_size: 2097152 # 2MB
+    # error_pages:
+    #   400: "./error_pages/400.html"
+    #   403: "./error_pages/403.html"
+    #   404: "./error_pages/404.html"
+    #   405: "./error_pages/405.html"
+    #   413: "./error_pages/413.html"
+    #   500: "./error_pages/500.html"
+    routes:
+      - path: "/old"
+        methods: ["GET"]
+        redirect: "https://www.youtube.com/watch?v=eaJNtng8o-Y&list=RDeaJNtng8o-Y&start_radio=1"
