@@ -9,4 +9,6 @@ fn main() {
         }
     };
     dbg!(config);
+
+    println!("Hello World");
 }
