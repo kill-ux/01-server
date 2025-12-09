@@ -73,3 +73,64 @@
 //     }
 //     Ok(())
 // }
+
+use std::{
+    pin::Pin,
+    sync::{Arc, Condvar, Mutex},
+    task::Poll,
+};
+
+struct DelayedPrinter {
+    remaining_polls: usize,
+    message: String,
+}
+
+impl Future for DelayedPrinter {
+    type Output = ();
+
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        if (self.remaining_polls == 0) {
+            println!("✅ Future finished: {}", self.message);
+            Poll::Ready(())
+        } else {
+            let waker = cx.waker().clone();
+            println!(
+                "⏳ Future pending: {}. Remaining polls: {}",
+                self.message, self.remaining_polls
+            );
+
+            
+
+            Poll::Pending
+        }
+    }
+}
+
+struct Executor {
+    task_queue: Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()>>>>>>,
+    condvar: Condvar,
+}
+
+impl Executor {
+    fn new() -> Self {
+        Executor {
+            task_queue: Arc::new(Mutex::new(Vec::new())),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn spawn(&self, future: impl Future<Output = ()> + 'static) {
+        let mut queue = self.task_queue.lock().unwrap();
+        queue.push(Box::pin(future));
+    }
+}
+
+fn main() {
+    println!("Hello World");
+    let executor = Executor::new();
+
+    executor.spawn(future);
+}
