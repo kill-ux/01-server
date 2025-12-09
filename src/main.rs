@@ -77,8 +77,34 @@
 use std::{
     pin::Pin,
     sync::{Arc, Condvar, Mutex},
-    task::Poll,
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+    thread,
 };
+
+const VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
+
+unsafe fn clone_waker(data: *const ()) -> RawWaker {
+    let arc =
+        Arc::from_raw(data as *const (Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()>>>>>>, Condvar));
+    let new_arc = Arc::clone(&arc);
+    let _ = Arc::into_raw(arc);
+    RawWaker::new(Arc::into_raw(new_arc) as *const (), &VTABLE)
+}
+
+unsafe fn wake(data: *const ()) {
+    let arc =
+        Arc::from_raw(data as *const (Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()>>>>>>, Condvar));
+    arc.1.notify_one();
+}
+
+unsafe fn wake_by_ref(data: *const ()) {
+    wake(data);
+}
+
+unsafe fn drop_waker(data: *const ()) {
+    let _ =
+        Arc::from_raw(data as *const (Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()>>>>>>, Condvar));
+}
 
 struct DelayedPrinter {
     remaining_polls: usize,
@@ -89,7 +115,7 @@ impl Future for DelayedPrinter {
     type Output = ();
 
     fn poll(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         if (self.remaining_polls == 0) {
@@ -101,9 +127,17 @@ impl Future for DelayedPrinter {
                 "⏳ Future pending: {}. Remaining polls: {}",
                 self.message, self.remaining_polls
             );
+            let remaining_polls = self.remaining_polls;
+            thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                println!(
+                    "    ⏰ Waking up task for polls: {} (Simulated I/O Ready)",
+                    remaining_polls
+                );
+                waker.wake();
+            });
 
-            
-
+            self.remaining_polls -= 1;
             Poll::Pending
         }
     }
@@ -111,14 +145,14 @@ impl Future for DelayedPrinter {
 
 struct Executor {
     task_queue: Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()>>>>>>,
-    condvar: Condvar,
+    condvar: Arc<Condvar>,
 }
 
 impl Executor {
     fn new() -> Self {
         Executor {
             task_queue: Arc::new(Mutex::new(Vec::new())),
-            condvar: Condvar::new(),
+            condvar: Arc::new(Condvar::new()),
         }
     }
 
@@ -126,11 +160,63 @@ impl Executor {
         let mut queue = self.task_queue.lock().unwrap();
         queue.push(Box::pin(future));
     }
+
+    fn run(&self) {
+        let queue_clone = self.task_queue.clone();
+        let condvar_clone = self.condvar.clone();
+
+        let raw_waker = RawWaker::new(
+            Arc::into_raw(Arc::new((queue_clone, condvar_clone))) as *const (),
+            &VTABLE,
+        );
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+
+        let mut context = Context::from_waker(&waker);
+
+        loop {
+            let mut queue = self.task_queue.lock().unwrap();
+
+            if queue.is_empty() {
+                println!("\n😴 Executor blocked (No ready tasks). Waiting for wake...");
+                queue = self.condvar.wait(queue).unwrap();
+            }
+
+            let mut pending_tasks = Vec::new();
+
+            while let Some(mut task) = queue.pop() {
+                match task.as_mut().poll(&mut context) {
+                    Poll::Ready(_) => {
+
+                    }
+                    Poll::Pending => {
+                        pending_tasks.push(task);
+                    }
+                }
+            }
+
+            queue.append(&mut pending_tasks);
+
+            if queue.is_empty()
+        }
+    }
 }
 
 fn main() {
     println!("Hello World");
     let executor = Executor::new();
 
-    executor.spawn(future);
+    executor.spawn(DelayedPrinter {
+        remaining_polls: 3,
+        message: "Task A".to_string(),
+    });
+    executor.spawn(DelayedPrinter {
+        remaining_polls: 1,
+        message: "Task B".to_string(),
+    });
+    executor.spawn(DelayedPrinter {
+        remaining_polls: 2,
+        message: "Task C".to_string(),
+    });
+
+    executor.run()
 }
