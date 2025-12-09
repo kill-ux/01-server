@@ -13,4 +13,5 @@ fn main() {
     for server in config.servers {
         
     }
+    
 }
