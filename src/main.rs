@@ -10,5 +10,9 @@ fn main() {
     };
     dbg!(config);
 
+    for server in config.servers {
+        
+    }
+
     println!("Hello World");
 }
