@@ -1,4 +1,11 @@
-use std::{collections::HashMap, error::Error, fmt};
+use mio::{
+    Events, Interest, Poll, Token,
+    net::{TcpListener, TcpStream},
+};
+use server_proxy::error::Result;
+use std::{collections::HashMap, fmt, io::Read};
+
+// use error::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Method {
@@ -45,7 +52,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl Error for ParseError {}
+impl std::error::Error for ParseError {}
 
 impl From<std::string::FromUtf8Error> for ParseError {
     fn from(err: std::string::FromUtf8Error) -> Self {
@@ -80,22 +87,22 @@ impl HttpRequest {
     }
 }
 
-pub fn parse_request(request: &mut HttpRequest) -> Result<(), ParseError> {
+pub fn parse_request(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
     loop {
         match request.state {
             ParsingState::RequestLine => parse_request_line(request)?,
             ParsingState::Headers => parse_headers(request)?,
-            ParsingState::Body(content_length) => parse_body(request,content_length)?,
+            ParsingState::Body(content_length) => parse_body(request, content_length)?,
             _ => return Ok(()),
         }
     }
 }
 
-fn parse_request_line(request: &mut HttpRequest) -> Result<(), ParseError> {
+fn parse_request_line(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
     if let Some(index) = find_crlf(&request.buffer) {
-        let request_line_bytes = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
+        let request_line_bytes = request.buffer.drain(..index).collect::<Vec<u8>>();
+        request.buffer.drain(..2);
         let request_line = String::from_utf8(request_line_bytes)?;
-
         let parts: Vec<&str> = request_line.split_whitespace().collect();
         if parts.len() == 3 {
             request.method = match parts[0] {
@@ -118,14 +125,15 @@ fn parse_request_line(request: &mut HttpRequest) -> Result<(), ParseError> {
 
 fn extract_and_parse_header(
     request: &mut HttpRequest,
-) -> Result<Option<(String, String)>, ParseError> {
+) -> core::result::Result<Option<(String, String)>, ParseError> {
     if let Some(index) = find_crlf(&request.buffer) {
         if index == 0 {
             request.buffer.drain(..2);
             return Ok(None);
         }
-        let row = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
+        let row: Vec<u8> = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
         let key_value_string = String::from_utf8(row)?;
+
         return match key_value_string.trim_end_matches("\n\r").find(":") {
             Some(index) => {
                 return Ok(Some((
@@ -138,16 +146,14 @@ fn extract_and_parse_header(
     } else {
         Err(ParseError::IncompleteRequestLine)
     }
-    
 }
 
-fn parse_headers(request: &mut HttpRequest) -> Result<(), ParseError> {
+fn parse_headers(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
     loop {
         let headers_option = extract_and_parse_header(request)?;
         match headers_option {
             Some((k, v)) => request.headers.insert(k, v),
-            None => {
-                 match request.headers.get("Content-Length") {
+            None => match request.headers.get("Content-Length") {
                 Some(content_length_str) => {
                     if let Ok(size) = content_length_str.parse::<usize>() {
                         request.state = ParsingState::Body(size);
@@ -156,14 +162,16 @@ fn parse_headers(request: &mut HttpRequest) -> Result<(), ParseError> {
                         return Err(ParseError::InvalidHeaderValue);
                     }
                 }
-                None => return Err(ParseError::MalformedRequestLine)
-            }
+                None => return Err(ParseError::MalformedRequestLine),
             },
         };
     }
 }
 
-pub fn parse_body (request: &mut HttpRequest, content_length: usize) -> Result<(), ParseError> {
+pub fn parse_body(
+    request: &mut HttpRequest,
+    content_length: usize,
+) -> core::result::Result<(), ParseError> {
     request.body = request.buffer.drain(..content_length).collect();
     request.state = ParsingState::Complete;
     Ok(())
@@ -178,63 +186,59 @@ fn find_crlf(rows: &[u8]) -> Option<usize> {
     None
 }
 
-fn main() {
-    let http_get = concat!(
-        "GET /hello.htm HTTP/1.1\r\n",
-        "Host: www.tutorialspoint.com\r\n",
-        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n",
-        "Accept-Language: en-us\r\n",
-        "Connection: Keep-Alive\r\n",
-        "Content-Length: 5\r\n",
-        "\r\n",
-        "Hello"
-    );
+const SERVER: Token = Token(1);
+const CLIENT: Token = Token(2);
 
-    let mut request = HttpRequest::new();
-    request.buffer.extend_from_slice(http_get.as_bytes());
+fn main() -> Result<()> {
+    // let http_get = concat!("GET / HTTP/1.1\r\n", "Host: a.b.c\r\n", "\r\n", "Hello");
 
-    match parse_request(&mut request) {
-        Ok(()) => println!("Parsed: {:?}", request),
-        Err(e) => {
-            eprintln!("Parse error: {}", e)
+    // let mut request = HttpRequest::new();
+    // request.buffer.extend_from_slice(http_get.as_bytes());
+
+    // match parse_request(&mut request) {
+    //     Ok(()) => println!("Parsed: {:?}", request),
+    //     Err(e) => {
+    //         eprintln!("Parse error: {}", e)
+    //     }
+    // }
+
+    let mut poll = Poll::new()?;
+    let mut events = Events::with_capacity(128);
+
+    let addr = "127.0.0.1:13265".parse()?;
+    let mut server = TcpListener::bind(addr)?;
+
+    poll.registry()
+        .register(&mut server, SERVER, Interest::READABLE)?;
+
+    loop {
+        poll.poll(&mut events, None)?;
+
+        for event in events.iter() {
+            match event.token() {
+                SERVER => {
+                    if let Ok((mut con, addr)) = server.accept() {
+                        poll.registry().register(
+                            &mut con,
+                            CLIENT,
+                            Interest::READABLE | Interest::WRITABLE,
+                        )?;
+                        println!("New connection accepted");
+                    }
+                }
+
+                CLIENT => {
+                    if event.is_readable() {
+                        
+                    }
+
+                    if event.is_writable() {}
+
+                    return Ok(());
+                }
+
+                _ => unreachable!(),
+            }
         }
     }
 }
-
-// let mut poll = Poll::new()?;
-// let mut events = Events::with_capacity(128);
-
-// let addr = "127.0.0.1:13265".parse()?;
-// let mut server = TcpListener::bind(addr)?;
-
-// poll.registry().register(&mut server, SERVER, Interest::READABLE)?;
-
-// let mut client = TcpStream::connect(addr)?;
-// poll.registry().register(&mut client, CLIENT, Interest::READABLE | Interest::WRITABLE)?;
-
-// loop {
-//     poll.poll(&mut events, None)?;
-
-//     for event in events.iter() {
-//         match event.token() {
-//             SERVER => {
-//                 let con = server.accept()?;
-//                 drop(con);
-//             }
-
-//             CLIENT => {
-//                 if event.is_readable() {
-
-//                 }
-
-//                 if event.is_writable() {
-
-//                 }
-
-//                 return Ok(());
-//             }
-
-//             _ => unreachable!()
-//         }
-//     }
-// }
