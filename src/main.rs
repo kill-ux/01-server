@@ -84,6 +84,7 @@ pub fn parse_request(request: &mut HttpRequest) -> Result<(), ParseError> {
     loop {
         match request.state {
             ParsingState::RequestLine => parse_request_line(request)?,
+            ParsingState::Headers => parse_headers(request)?,
             _ => return Ok(()),
         }
     }
@@ -91,13 +92,10 @@ pub fn parse_request(request: &mut HttpRequest) -> Result<(), ParseError> {
 
 fn parse_request_line(request: &mut HttpRequest) -> Result<(), ParseError> {
     if let Some(index) = find_crlf(&request.buffer) {
-        let request_line_bytes = request.buffer.drain(..index).collect::<Vec<u8>>();
+        let request_line_bytes = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
         let request_line = String::from_utf8(request_line_bytes)?;
 
-        let parts: Vec<&str> = request_line
-            .trim_end_matches("\r\n")
-            .split_whitespace()
-            .collect();
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
         if parts.len() == 3 {
             request.method = match parts[0] {
                 "GET" => Method::GET,
@@ -108,13 +106,8 @@ fn parse_request_line(request: &mut HttpRequest) -> Result<(), ParseError> {
             request.url = parts[1].to_string();
             request.version = parts[2].to_string();
             request.state = ParsingState::Headers;
-            println!("{:?}", request);
         } else {
             return Err(ParseError::MalformedRequestLine);
-        }
-
-        if request.buffer.len() >= 2 {
-            request.buffer.drain(..2);
         }
     } else {
         return Err(ParseError::IncompleteRequestLine);
@@ -129,20 +122,42 @@ fn extract_and_parse_header(
         if index == 0 {
             return Ok(None);
         }
-        let row = request.buffer.drain(..index).collect::<Vec<u8>>();
+        let row = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
         let key_value_string = String::from_utf8(row)?;
-        let tow_points
-        let key_value_string = String::from_utf8(row)?.split(": ").collect::<Vec<&str>>();
-        if (key_value_string.len() != 2) {
-
-        }
+        return match key_value_string.trim_end_matches("\n\r").find(":") {
+            Some(index) => {
+                return Ok(Some((
+                    key_value_string[..index].trim().to_string(),
+                    key_value_string[index + 1..].trim().to_string(),
+                )));
+            }
+            None => Err(ParseError::MalformedRequestLine),
+        };
+    } else {
+        Err(ParseError::IncompleteRequestLine)
     }
-    Ok(None)
+    
 }
 
 fn parse_headers(request: &mut HttpRequest) -> Result<(), ParseError> {
     loop {
-        match extract_and_parse_header(request) {}
+        let headers_option = extract_and_parse_header(request)?;
+        match headers_option {
+            Some((k, v)) => request.headers.insert(k, v),
+            None => {
+                 match request.headers.get("Content-Length") {
+                Some(content_length_str) => {
+                    if let Ok(size) = content_length_str.parse::<usize>() {
+                        request.state = ParsingState::Body(size);
+                        return Ok(());
+                    } else {
+                        return Err(ParseError::InvalidHeaderValue);
+                    }
+                }
+                None => return Err(ParseError::MalformedRequestLine)
+            }
+            },
+        };
     }
 }
 
@@ -162,6 +177,7 @@ fn main() {
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n",
         "Accept-Language: en-us\r\n",
         "Connection: Keep-Alive\r\n",
+        "Content-Length: 5\r\n",
         "\r\n",
         "Hello"
     );
@@ -170,8 +186,10 @@ fn main() {
     request.buffer.extend_from_slice(http_get.as_bytes());
 
     match parse_request(&mut request) {
-        Ok(()) => println!("Parsed: {:?}", request.method),
-        Err(e) => eprintln!("Parse error: {}", e),
+        Ok(()) => println!("Parsed: {:?}", request),
+        Err(e) => {
+            eprintln!("Parse error: {}", e)
+        }
     }
 }
 
