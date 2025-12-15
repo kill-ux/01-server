@@ -161,6 +161,10 @@ fn parse_headers(request: &mut HttpRequest) -> Result<(), ParseError> {
     }
 }
 
+pub fn parse_body (request: &mut HttpRequest) {
+    request.body = request.buffer.drain(..request.state).collect();
+}
+
 fn find_crlf(rows: &[u8]) -> Option<usize> {
     for index in 0..rows.len().saturating_sub(1) {
         if rows[index] == b'\r' && rows[index + 1] == b'\n' {
