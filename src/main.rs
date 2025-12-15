@@ -85,6 +85,7 @@ pub fn parse_request(request: &mut HttpRequest) -> Result<(), ParseError> {
         match request.state {
             ParsingState::RequestLine => parse_request_line(request)?,
             ParsingState::Headers => parse_headers(request)?,
+            ParsingState::Body(content_length) => parse_body(request,content_length)?,
             _ => return Ok(()),
         }
     }
@@ -120,6 +121,7 @@ fn extract_and_parse_header(
 ) -> Result<Option<(String, String)>, ParseError> {
     if let Some(index) = find_crlf(&request.buffer) {
         if index == 0 {
+            request.buffer.drain(..2);
             return Ok(None);
         }
         let row = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
@@ -161,8 +163,10 @@ fn parse_headers(request: &mut HttpRequest) -> Result<(), ParseError> {
     }
 }
 
-pub fn parse_body (request: &mut HttpRequest) {
-    request.body = request.buffer.drain(..request.state).collect();
+pub fn parse_body (request: &mut HttpRequest, content_length: usize) -> Result<(), ParseError> {
+    request.body = request.buffer.drain(..content_length).collect();
+    request.state = ParsingState::Complete;
+    Ok(())
 }
 
 fn find_crlf(rows: &[u8]) -> Option<usize> {
