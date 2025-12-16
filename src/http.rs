@@ -28,6 +28,19 @@ pub enum ParsingState {
     Error,
 }
 
+/*
+BodyContentLength { 
+        remaining: usize, 
+        max_size: usize,
+    },
+    // Required for chunked requests
+    BodyChunked { 
+        current_chunk_size: usize,
+        max_size: usize,
+        total_read: usize,
+    },
+ */
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseError {
     IncompleteRequestLine,
