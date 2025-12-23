@@ -104,6 +104,8 @@ impl Server {
 
                 // ######## parse data
                 if !conn.request.buffer.is_empty() {
+
+                    println!("length => {:?}",conn.request.buffer.len());
                     
                     match conn.request.parse_request() {
                         Ok(_) => {
@@ -116,11 +118,13 @@ impl Server {
                                 // Logic for handling the request goes here...
                                 conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nWelcom To our Server.");
 
+                                // conn.request = HttpRequest::new();
                                 poll.registry().reregister(
                                     &mut conn.stream,
                                     token_client,
                                     Interest::READABLE | Interest::WRITABLE,
                                 )?;
+
                             }
                         }
                         Err(e) if ParseError::IncompleteRequestLine == e => {
