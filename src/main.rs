@@ -3,20 +3,32 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use server_proxy::error::Result;
+use server_proxy::{
+    error::Result,
+    http::{HttpRequest, ParseError, ParsingState, parse_request},
+};
 use std::{
     collections::HashMap,
-    fmt,
-    io::{Error, ErrorKind, Read, Write},
-    net::SocketAddr,
+    io::{ErrorKind, Read, Write},
+    net::SocketAddr
 };
 
 pub struct HttpConnection {
     pub stream: TcpStream,
     pub addr: SocketAddr,
-    pub read_buffer: Vec<u8>,
     pub write_buffer: Vec<u8>,
-    // pub request: HttpRequest,
+    pub request: HttpRequest,
+}
+
+impl HttpConnection {
+    fn new(stream: TcpStream, addr: SocketAddr) -> Self {
+        HttpConnection {
+            stream,
+            addr,
+            write_buffer: Vec::new(),
+            request: HttpRequest::new(),
+        }
+    }
 }
 
 pub struct Server {
@@ -46,27 +58,19 @@ impl Server {
             match self.listener.accept() {
                 Ok((mut stream, addr)) => {
                     let token = self.next_token();
+
                     poll.registry()
                         .register(&mut stream, token, Interest::READABLE)?;
-                    self.connections.insert(
-                        token,
-                        HttpConnection {
-                            stream,
-                            addr,
-                            read_buffer: Vec::with_capacity(4096),
-                            write_buffer: Vec::new(),
-                        },
-                    );
+
+                    self.connections
+                        .insert(token, HttpConnection::new(stream, addr));
+
                     println!("Accepted connection from {}", addr);
                 }
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => break,
-                Err(e) => {
-                    eprintln!("Accept error: {}", e);
-                    break;
-                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(()),
+                Err(e) => return Err(e.into()),
             }
         }
-        Ok(())
     }
 
     pub fn handle_client_connection(
@@ -88,7 +92,7 @@ impl Server {
                             break;
                         }
                         Ok(n) => {
-                            conn.read_buffer.extend_from_slice(&temp_buf[..n]);
+                            conn.request.buffer.extend_from_slice(&temp_buf[..n]);
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                         Err(_) => {
@@ -98,17 +102,37 @@ impl Server {
                     }
                 }
 
-                // ##########
-                println!("{:?}", conn.read_buffer);
-                conn.write_buffer.extend_from_slice(&conn.read_buffer);
-                conn.read_buffer.clear();
+                // ######## parse data
+                if !conn.request.buffer.is_empty() {
+                    println!("ff");
+                    match parse_request(&mut conn.request) {
+                        Ok(_) => {
+                            if conn.request.state == ParsingState::Complete {
+                                println!(
+                                    "Request Finished: {:?} {:?}",
+                                    conn.request.method, conn.request.url
+                                );
 
-                // change re
-                poll.registry().reregister(
-                    &mut conn.stream,
-                    token_client,
-                    Interest::READABLE | Interest::WRITABLE,
-                )?;
+                                // Logic for handling the request goes here...
+                                conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\n\r\n");
+
+                                poll.registry().reregister(
+                                    &mut conn.stream,
+                                    token_client,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                )?;
+                            }
+                        }
+                        Err(e) if ParseError::IncompleteRequestLine == e => {
+                            // no action needed
+                            println!("{}",e);
+                        }
+                        Err(e) => {
+                            eprintln!("Parsing error: {}", e);
+                            connection_closed = true;
+                        }
+                    }
+                }
             }
 
             // --- HANDLE WRITE ---
@@ -128,7 +152,6 @@ impl Server {
                     Err(_) => connection_closed = true,
                 }
             }
-
             // Check for HUP (Hang up)
             if event.is_read_closed() || event.is_write_closed() {
                 connection_closed = true;
@@ -173,12 +196,17 @@ fn main() -> Result<()> {
         for event in events.iter() {
             match event.token() {
                 SERVER => {
-                    server.handle_accept_connections(&mut poll)?;
+                    if let Err(e) = server.handle_accept_connections(&mut poll) {
+                        eprintln!("Listener error: {}", e);
+                    }
                 }
 
                 token_client => {
                     println!("client token is => {:?}", token_client);
-                    server.handle_client_connection(&poll, event, token_client)?;
+                    if let Err(e) = server.handle_client_connection(&poll, event, token_client) {
+                        eprintln!("Error handling client {:?}: {}", token_client, e);
+                        server.connections.remove(&token_client);
+                    }
                 }
             }
         }

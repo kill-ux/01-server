@@ -1,16 +1,4 @@
-use mio::{
-    Events, Interest, Poll, Token,
-    net::{TcpListener, TcpStream},
-};
-use server_proxy::error::Result;
-use std::{
-    collections::HashMap,
-    fmt,
-    io::{Read, Write},
-    net::SocketAddr,
-};
-
-
+use std::{collections::HashMap, fmt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Method {
@@ -29,12 +17,12 @@ pub enum ParsingState {
 }
 
 /*
-BodyContentLength { 
-        remaining: usize, 
+BodyContentLength {
+        remaining: usize,
         max_size: usize,
     },
     // Required for chunked requests
-    BodyChunked { 
+    BodyChunked {
         current_chunk_size: usize,
         max_size: usize,
         total_read: usize,
@@ -99,7 +87,7 @@ impl HttpRequest {
             headers: HashMap::new(),
             body: Vec::new(),
             query_params: HashMap::new(),
-            buffer: Vec::new(),
+            buffer: Vec::with_capacity(4096),
             state: ParsingState::RequestLine,
         }
     }
