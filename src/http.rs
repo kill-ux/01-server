@@ -188,6 +188,7 @@ impl HttpRequest {
                             }
                         }
                     }
+                    self.state = ParsingState::Complete;
                     return Ok(());
                 }
             };

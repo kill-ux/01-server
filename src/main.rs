@@ -114,7 +114,7 @@ impl Server {
                                 );
 
                                 // Logic for handling the request goes here...
-                                conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\n\r\n");
+                                conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nWelcom To our Server.");
 
                                 poll.registry().reregister(
                                     &mut conn.stream,
