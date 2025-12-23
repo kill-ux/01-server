@@ -5,7 +5,7 @@ use mio::{
 };
 use server_proxy::{
     error::Result,
-    http::{HttpRequest, ParseError, ParsingState, parse_request},
+    http::{HttpRequest, ParseError, ParsingState},
 };
 use std::{
     collections::HashMap,
@@ -104,8 +104,8 @@ impl Server {
 
                 // ######## parse data
                 if !conn.request.buffer.is_empty() {
-                    println!("ff");
-                    match parse_request(&mut conn.request) {
+                    
+                    match conn.request.parse_request() {
                         Ok(_) => {
                             if conn.request.state == ParsingState::Complete {
                                 println!(
@@ -125,7 +125,7 @@ impl Server {
                         }
                         Err(e) if ParseError::IncompleteRequestLine == e => {
                             // no action needed
-                            println!("{}",e);
+                            println!("state {:?} {}",conn.request,e);
                         }
                         Err(e) => {
                             eprintln!("Parsing error: {}", e);

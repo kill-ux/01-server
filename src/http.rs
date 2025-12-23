@@ -91,96 +91,118 @@ impl HttpRequest {
             state: ParsingState::RequestLine,
         }
     }
-}
 
-pub fn parse_request(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
-    loop {
-        match request.state {
-            ParsingState::RequestLine => parse_request_line(request)?,
-            ParsingState::Headers => parse_headers(request)?,
-            ParsingState::Body(content_length) => parse_body(request, content_length)?,
-            _ => return Ok(()),
-        }
-    }
-}
-
-fn parse_request_line(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
-    if let Some(index) = find_crlf(&request.buffer) {
-        let request_line_bytes = request.buffer.drain(..index).collect::<Vec<u8>>();
-        request.buffer.drain(..2);
-        let request_line = String::from_utf8(request_line_bytes)?;
-        let parts: Vec<&str> = request_line.split_whitespace().collect();
-        if parts.len() == 3 {
-            request.method = match parts[0] {
-                "GET" => Method::GET,
-                "POST" => Method::POST,
-                "DELETE" => Method::DELETE,
-                _ => return Err(ParseError::InvalidMethod),
+    pub fn parse_request(&mut self) -> core::result::Result<(), ParseError> {
+        loop {
+            let res = match self.state {
+                ParsingState::RequestLine => self.parse_request_line(),
+                ParsingState::Headers => self.parse_headers(),
+                ParsingState::Body(content_length) => self.parse_body(content_length),
+                _ => return Ok(()),
             };
-            request.url = parts[1].to_string();
-            request.version = parts[2].to_string();
-            request.state = ParsingState::Headers;
-        } else {
-            return Err(ParseError::MalformedRequestLine);
-        }
-    } else {
-        return Err(ParseError::IncompleteRequestLine);
-    }
-    Ok(())
-}
 
-fn extract_and_parse_header(
-    request: &mut HttpRequest,
-) -> core::result::Result<Option<(String, String)>, ParseError> {
-    if let Some(index) = find_crlf(&request.buffer) {
-        if index == 0 {
-            request.buffer.drain(..2);
-            return Ok(None);
-        }
-        let row: Vec<u8> = request.buffer.drain(..index + 2).collect::<Vec<u8>>();
-        let key_value_string = String::from_utf8(row)?;
-
-        return match key_value_string.trim_end_matches("\n\r").find(":") {
-            Some(index) => {
-                return Ok(Some((
-                    key_value_string[..index].trim().to_string(),
-                    key_value_string[index + 1..].trim().to_string(),
-                )));
+            if let Err(ParseError::IncompleteRequestLine) = res {
+                return Err(ParseError::IncompleteRequestLine);
             }
-            None => Err(ParseError::MalformedRequestLine),
-        };
-    } else {
-        Err(ParseError::IncompleteRequestLine)
-    }
-}
 
-fn parse_headers(request: &mut HttpRequest) -> core::result::Result<(), ParseError> {
-    loop {
-        let headers_option = extract_and_parse_header(request)?;
-        match headers_option {
-            Some((k, v)) => request.headers.insert(k, v),
-            None => match request.headers.get("Content-Length") {
-                Some(content_length_str) => {
-                    if let Ok(size) = content_length_str.parse::<usize>() {
-                        request.state = ParsingState::Body(size);
-                        return Ok(());
-                    } else {
-                        return Err(ParseError::InvalidHeaderValue);
-                    }
+            res?;
+        }
+    }
+
+    fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
+        println!(
+            "####{}####\n",
+            String::from_utf8(self.buffer.clone()).unwrap()
+        );
+        if let Some(index) = find_crlf(&self.buffer) {
+            let request_line_bytes = self.buffer.drain(..index).collect::<Vec<u8>>();
+            self.buffer.drain(..2);
+            let request_line = String::from_utf8(request_line_bytes)?;
+            let parts: Vec<&str> = request_line.split_whitespace().collect();
+            if parts.len() == 3 {
+                self.method = match parts[0] {
+                    "GET" => Method::GET,
+                    "POST" => Method::POST,
+                    "DELETE" => Method::DELETE,
+                    _ => return Err(ParseError::InvalidMethod),
+                };
+                self.url = parts[1].to_string();
+                self.version = parts[2].to_string();
+                self.state = ParsingState::Headers;
+            } else {
+                return Err(ParseError::MalformedRequestLine);
+            }
+        } else {
+            return Err(ParseError::IncompleteRequestLine);
+        }
+        Ok(())
+    }
+
+    fn extract_and_parse_header(
+        &mut self,
+    ) -> core::result::Result<Option<(String, String)>, ParseError> {
+        if let Some(index) = find_crlf(&self.buffer) {
+            if index == 0 {
+                self.buffer.drain(..2);
+                return Ok(None);
+            }
+            let row: Vec<u8> = self.buffer.drain(..index + 2).collect::<Vec<u8>>();
+            let key_value_string = String::from_utf8(row)?;
+
+            return match key_value_string.trim_end_matches("\r\n").find(":") {
+                Some(index) => {
+                    return Ok(Some((
+                        key_value_string[..index].trim().to_string(),
+                        key_value_string[index + 1..].trim().to_string(),
+                    )));
                 }
-                None => return Err(ParseError::MalformedRequestLine),
-            },
-        };
+                None => {
+                    println!("here");
+                    Err(ParseError::MalformedRequestLine)
+                }
+            };
+        } else {
+            Err(ParseError::IncompleteRequestLine)
+        }
     }
-}
 
-pub fn parse_body(
-    request: &mut HttpRequest,
-    content_length: usize,
-) -> core::result::Result<(), ParseError> {
-    request.body = request.buffer.drain(..content_length).collect();
-    request.state = ParsingState::Complete;
-    Ok(())
+    fn parse_headers(&mut self) -> core::result::Result<(), ParseError> {
+        loop {
+            let headers_option = self.extract_and_parse_header()?;
+            match headers_option {
+                Some((k, v)) => self.headers.insert(k, v),
+                None => {
+                    if !(self.method == Method::GET) {
+                        match self.headers.get("Content-Length") {
+                            Some(content_length_str) => {
+                                if let Ok(size) = content_length_str.parse::<usize>() {
+                                    self.state = ParsingState::Body(size);
+                                    return Ok(());
+                                } else {
+                                    return Err(ParseError::InvalidHeaderValue);
+                                }
+                            }
+                            None => {
+                                println!("nnnnnnn");
+                                return Err(ParseError::MalformedRequestLine);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+            };
+        }
+    }
+
+    pub fn parse_body(&mut self, content_length: usize) -> core::result::Result<(), ParseError> {
+        if self.buffer.len() < content_length {
+            // Not enough data yet
+            return Err(ParseError::IncompleteRequestLine);
+        }
+        self.body = self.buffer.drain(..content_length).collect();
+        self.state = ParsingState::Complete;
+        Ok(())
+    }
 }
 
 fn find_crlf(rows: &[u8]) -> Option<usize> {
