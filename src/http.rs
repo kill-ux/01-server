@@ -81,6 +81,12 @@ pub struct HttpRequest {
     pub state: ParsingState,
 }
 
+impl Default for HttpRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HttpRequest {
     pub fn new() -> Self {
         HttpRequest {
@@ -157,18 +163,16 @@ impl HttpRequest {
             let row: Vec<u8> = self.buffer.drain(..index + 2).collect::<Vec<u8>>();
             let key_value_string = String::from_utf8(row)?;
 
-            return match key_value_string.trim_end_matches("\r\n").find(":") {
-                Some(index) => {
-                    return Ok(Some((
-                        key_value_string[..index].trim().to_string(),
-                        key_value_string[index + 1..].trim().to_string(),
-                    )));
-                }
+            match key_value_string.trim_end_matches("\r\n").find(":") {
+                Some(index) => Ok(Some((
+                    key_value_string[..index].trim().to_string(),
+                    key_value_string[index + 1..].trim().to_string(),
+                ))),
                 None => {
                     println!("here");
                     Err(ParseError::MalformedRequestLine)
                 }
-            };
+            }
         } else {
             Err(ParseError::IncompleteRequestLine)
         }
@@ -215,12 +219,8 @@ impl HttpRequest {
 }
 
 fn find_crlf(rows: &[u8]) -> Option<usize> {
-    for index in 0..rows.len().saturating_sub(1) {
-        if rows[index] == b'\r' && rows[index + 1] == b'\n' {
-            return Some(index);
-        }
-    }
-    None
+    (0..rows.len().saturating_sub(1))
+        .find(|&index| rows[index] == b'\r' && rows[index + 1] == b'\n')
 }
 
 fn parse_query_string(query: &str) -> HashMap<String, String> {

@@ -52,7 +52,7 @@ impl Server {
 
     pub fn next_token(&mut self) -> Token {
         self.next_token += 1;
-        return Token(self.next_token);
+        Token(self.next_token)
     }
 
     fn handle_accept_connections(&mut self, poll: &mut Poll) -> Result<()> {
