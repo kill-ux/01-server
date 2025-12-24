@@ -1,7 +1,29 @@
-servers:
-  - host: "127.0.0.1"
-    ports: [13265, 13266]
-    server_name: "default"
-    routes: 
-      - path: "/"
-        methods: ["GET"]
+server:
+  host: 127.0.0.1
+  ports: [8080, 9000]
+  server_names: localhost myproxy.local
+  error_pages: 
+    404: /errors/404.html
+    500: /errors/500.html 
+  routes:
+    - path: /
+      methods: [GET]
+      root: ./public
+      default_file: index.html
+      autoindex: true
+    - path: /cgi-bin
+      methods: [GET, POST]
+      cgi_ext: .py
+
+
+server:
+  host: 10.1.8.6
+  ports: [3000]
+  server_names: new_server
+  error_pages: 
+    404: /errors/404.html
+  routes:
+    - path: /
+      methods: [GET]
+      root: ./public
+      default_file: index.html

@@ -4,8 +4,10 @@ use mio::{
     net::{TcpListener, TcpStream},
 };
 use server_proxy::{
+    config::AppConfig,
     error::Result,
-    http::{HttpRequest, Method, ParseError, ParsingState}, router::Router,
+    http::{HttpRequest, Method, ParseError, ParsingState},
+    router::Router,
 };
 use std::{
     collections::HashMap,
@@ -32,22 +34,46 @@ impl HttpConnection {
 }
 
 pub struct Server {
-    listener: TcpListener,
+    listener: HashMap<Token, TcpListener>,
     connections: HashMap<Token, HttpConnection>,
     router: Router,
+    config: AppConfig,
     next_token: usize,
 }
 
 impl Server {
-    pub fn new(addr: SocketAddr) -> Result<Self> {
-        let server = Server {
-            listener: TcpListener::bind(addr)?,
+    pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
+        let mut listeners = HashMap::new();
+        let mut bound_ports = std::collections::HashSet::new();
+        let mut next_token = 0;
+
+        for s_cfg in config.servers {
+            for &port in &s_cfg.ports {
+                let addr_str = format!("{}:{}", s_cfg.host, port);
+                if bound_ports.contains(&addr_str) {
+                    continue;
+                }
+
+                let addr: SocketAddr = addr_str.parse()?;
+                let mut listener = TcpListener::bind(addr)?;
+
+                let token = Token(next_token);
+                // Register the listener to the poll immediately
+                poll.registry()
+                    .register(&mut listener, token, Interest::READABLE)?;
+
+                listeners.insert(token, listener);
+                bound_ports.insert(addr_str);
+                next_token += 1;
+            }
+        }
+        Ok(Server {
+            listener: listeners, // This is your HashMap<Token, TcpListener>
             connections: HashMap::new(),
             router: Router::new(),
-            next_token: 0,
-        };
-
-        Ok(server)
+            config,
+            next_token, // Start client tokens after the listener tokens
+        })
     }
 
     pub fn next_token(&mut self) -> Token {
@@ -117,7 +143,7 @@ impl Server {
                                 let response = self.router.route(&conn.request);
                                 conn.write_buffer.extend_from_slice(&response);
 
-                                conn.request = HttpRequest::new();  
+                                conn.request = HttpRequest::new();
                                 poll.registry().reregister(
                                     &mut conn.stream,
                                     token_client,
@@ -169,24 +195,16 @@ impl Server {
 }
 
 fn main() -> Result<()> {
-    // let http_get = concat!("GET / HTTP/1.1\r\n", "Host: a.b.c\r\n", "\r\n", "Hello");
+    let config = AppConfig::parse()?;
 
-    // let mut request = HttpRequest::new();
-    // request.buffer.extend_from_slice(http_get.as_bytes());
-
-    // match parse_request(&mut request) {
-    //     Ok(()) => println!("Parsed: {:?}", request),
-    //     Err(e) => {
-    //         eprintln!("Parse error: {}", e)
-    //     }
-    // }
+    dbg!(&config);
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
 
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
     // let mut server = TcpListener::bind(addr)?;
-    let mut server = Server::new(addr)?;
+    let mut server = Server::new(config)?;
     server.router.add_route(Method::GET, "/", handle_home);
 
     const SERVER: Token = Token(0);
@@ -216,12 +234,12 @@ fn main() -> Result<()> {
     }
 }
 
-
 fn handle_home(_req: &HttpRequest) -> Vec<u8> {
     let body = "Welcome Home";
     format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
-    ).into_bytes()
+    )
+    .into_bytes()
 }
