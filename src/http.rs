@@ -1,6 +1,9 @@
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display},
+};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Method {
     GET,
     POST,
@@ -110,10 +113,6 @@ impl HttpRequest {
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
-        println!(
-            "####{}####\n",
-            String::from_utf8(self.buffer.clone()).unwrap()
-        );
         if let Some(index) = find_crlf(&self.buffer) {
             let request_line_bytes = self.buffer.drain(..index).collect::<Vec<u8>>();
             self.buffer.drain(..2);
@@ -126,7 +125,16 @@ impl HttpRequest {
                     "DELETE" => Method::DELETE,
                     _ => return Err(ParseError::InvalidMethod),
                 };
-                self.url = parts[1].to_string();
+                // self.url = parts[1].to_string();
+
+                let full_url = parts[1];
+                if let Some((path, query_string)) = full_url.split_once('?') {
+                    self.url = path.to_string();
+                    self.query_params = parse_query_string(query_string);
+                } else {
+                    self.url = full_url.to_string();
+                }
+
                 self.version = parts[2].to_string();
                 self.state = ParsingState::Headers;
             } else {
@@ -213,4 +221,41 @@ fn find_crlf(rows: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+fn parse_query_string(query: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            map.insert(key.to_string(), value.to_string());
+        }
+    }
+    map
+}
+
+impl Display for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "--- HTTP Request ---")?;
+        // 1. Request Line: GET /path HTTP/1.1
+        writeln!(f, "{:?} {} {}", self.method, self.url, self.version)?;
+
+        // 2. Headers: Key: Value
+        writeln!(f, "Headers:")?;
+        for (key, value) in &self.headers {
+            writeln!(f, "  {}: {}", key, value)?;
+        }
+
+        // 3. Body Summary
+        // We only print the body if it's UTF-8; otherwise, we show the byte count.
+        if !self.body.is_empty() {
+            writeln!(f, "Body ({} bytes):", self.body.len())?;
+            match String::from_utf8(self.body.clone()) {
+                Ok(s) => writeln!(f, "  {}", s)?,
+                Err(_) => writeln!(f, "  <binary data>")?,
+            }
+        } else {
+            writeln!(f, "Body: <empty>")?;
+        }
+        writeln!(f, "--------------------")
+    }
 }

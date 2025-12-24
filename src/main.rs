@@ -5,12 +5,12 @@ use mio::{
 };
 use server_proxy::{
     error::Result,
-    http::{HttpRequest, ParseError, ParsingState},
+    http::{HttpRequest, Method, ParseError, ParsingState}, router::Router,
 };
 use std::{
     collections::HashMap,
     io::{ErrorKind, Read, Write},
-    net::SocketAddr
+    net::SocketAddr,
 };
 
 pub struct HttpConnection {
@@ -34,6 +34,7 @@ impl HttpConnection {
 pub struct Server {
     listener: TcpListener,
     connections: HashMap<Token, HttpConnection>,
+    router: Router,
     next_token: usize,
 }
 
@@ -42,6 +43,7 @@ impl Server {
         let server = Server {
             listener: TcpListener::bind(addr)?,
             connections: HashMap::new(),
+            router: Router::new(),
             next_token: 0,
         };
 
@@ -104,32 +106,28 @@ impl Server {
 
                 // ######## parse data
                 if !conn.request.buffer.is_empty() {
-
-                    println!("length => {:?}",conn.request.buffer.len());
-                    
                     match conn.request.parse_request() {
                         Ok(_) => {
                             if conn.request.state == ParsingState::Complete {
-                                println!(
-                                    "Request Finished: {:?} {:?}",
-                                    conn.request.method, conn.request.url
-                                );
+                                println!("{}", conn.request);
 
                                 // Logic for handling the request goes here...
-                                conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nWelcom To our Server.");
+                                // conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nWelcom To our Server.");
 
-                                // conn.request = HttpRequest::new();
+                                let response = self.router.route(&conn.request);
+                                conn.write_buffer.extend_from_slice(&response);
+
+                                conn.request = HttpRequest::new();  
                                 poll.registry().reregister(
                                     &mut conn.stream,
                                     token_client,
                                     Interest::READABLE | Interest::WRITABLE,
                                 )?;
-
                             }
                         }
                         Err(e) if ParseError::IncompleteRequestLine == e => {
                             // no action needed
-                            println!("state {:?} {}",conn.request,e);
+                            println!("state {:?} {}", conn.request, e);
                         }
                         Err(e) => {
                             eprintln!("Parsing error: {}", e);
@@ -189,6 +187,7 @@ fn main() -> Result<()> {
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
     // let mut server = TcpListener::bind(addr)?;
     let mut server = Server::new(addr)?;
+    server.router.add_route(Method::GET, "/", handle_home);
 
     const SERVER: Token = Token(0);
 
@@ -215,4 +214,14 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+
+fn handle_home(_req: &HttpRequest) -> Vec<u8> {
+    let body = "Welcome Home";
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    ).into_bytes()
 }
