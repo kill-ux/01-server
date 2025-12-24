@@ -167,13 +167,13 @@ impl HttpRequest {
                 Some(index) => Ok(Some((
                     key_value_string[..index].trim().to_string(),
                     key_value_string[index + 1..].trim().to_string(),
-                ))),
+                ))), 
                 None => {
                     println!("here");
                     Err(ParseError::MalformedRequestLine)
                 }
             }
-        } else {
+        } else { 
             Err(ParseError::IncompleteRequestLine)
         }
     }
