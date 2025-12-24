@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fs::File, io::Read, iter::Peekable, str::Lines};
+use std::{collections::HashMap, iter::Peekable, str::Lines};
 
 // #[derive(Deserialize, Debug)]
 // pub struct Route {
@@ -123,7 +123,7 @@ impl AppConfig {
                     "server_names" => server.server_names = value.split_whitespace().map(|s| s.to_string()).collect(),
                     "default_server" => server.default_server = value == "true",
                     "client_max_body_size" => server.client_max_body_size = value.parse().unwrap_or(1024),
-                    
+
                     _ => {}
                 }
             }
