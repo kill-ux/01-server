@@ -136,8 +136,8 @@ impl HttpRequest {
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
-        if let Some(index) = find_crlf(&self.buffer[self.cursor..], self.cursor) {
-            let abs_index = self.cursor + index;
+        if let Some(abs_index) = find_crlf(&self.buffer, self.cursor) {
+            // let abs_index = self.cursor + index;
 
             let line_bytes = &self.buffer[self.cursor..abs_index];
             let request_line =
@@ -168,18 +168,13 @@ impl HttpRequest {
     fn extract_and_parse_header(
         &mut self,
     ) -> core::result::Result<Option<(String, String)>, ParseError> {
-        if let Some(rel_index) = find_crlf(&self.buffer[self.cursor..], self.cursor) {
-            dbg!(
-                String::from_utf8(self.buffer[self.cursor..self.cursor + rel_index].to_vec())
-                    .unwrap()
-            );
-            let abs_index = self.cursor + rel_index;
-            if rel_index == 0 {
+        if let Some(abs_index) = find_crlf(&self.buffer, self.cursor) {
+            let line_bytes = &self.buffer[self.cursor..abs_index];
+            if line_bytes.is_empty() {
                 dbg!("ss");
-                self.cursor += CRLN_LEN;
+                self.cursor = abs_index + CRLN_LEN;
                 return Ok(None);
             }
-            let line_bytes = &self.buffer[self.cursor..abs_index];
             let line =
                 std::str::from_utf8(line_bytes).map_err(|_| ParseError::MalformedRequestLine)?;
             self.cursor = abs_index + CRLN_LEN;
@@ -223,20 +218,6 @@ impl HttpRequest {
     }
 
     pub fn parse_body(&mut self, content_length: usize) -> core::result::Result<(), ParseError> {
-        // if self.buffer.len() < content_length {
-        //     // Not enough data yet
-        //     return Err(ParseError::IncompleteRequestLine);
-        // }
-
-        // self.body = self
-        //     .buffer
-        //     .drain(..cmp::min(self.buffer.len(), content_length))
-        //     .collect();
-        // if self.body.len() == content_length {
-        //     self.state = ParsingState::Complete;
-        // }
-        // Ok(())
-
         let available = self.buffer.len() - self.cursor;
 
         if available < content_length {
@@ -255,16 +236,16 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
 
     let mut current_pos = 0;
     while let Some(r_pos) = search_area[current_pos..].iter().position(|&b| b == b'\r') {
-        let abs_r_pos = current_pos + r_pos;
-
-        if search_area.get(abs_r_pos + 1) == Some(&b'\n') {
-            return Some(abs_r_pos + start_offset);
+        let abs_r_pos_in_search = current_pos + r_pos;
+        
+        if search_area.get(abs_r_pos_in_search + 1) == Some(&b'\n') {
+            // Return the absolute position in the original 'buffer'
+            return Some(start_offset + abs_r_pos_in_search);
         }
-        current_pos = abs_r_pos + 1;
+        current_pos = abs_r_pos_in_search + 1;
     }
     None
 }
-
 impl Display for HttpRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "--- HTTP Request ---")?;
