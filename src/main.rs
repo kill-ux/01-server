@@ -1,245 +1,39 @@
-use mio::{
-    Events, Interest, Poll, Token,
-    event::Event,
-    net::{TcpListener, TcpStream},
-};
-use server_proxy::{
-    config::AppConfig,
-    error::Result,
-    http::{HttpRequest, Method, ParseError, ParsingState},
-    router::Router,
-};
-use std::{
-    collections::HashMap,
-    io::{ErrorKind, Read, Write},
-    net::SocketAddr,
-};
-
-pub struct HttpConnection {
-    pub stream: TcpStream,
-    pub addr: SocketAddr,
-    pub write_buffer: Vec<u8>,
-    pub request: HttpRequest,
-}
-
-impl HttpConnection {
-    fn new(stream: TcpStream, addr: SocketAddr) -> Self {
-        HttpConnection {
-            stream,
-            addr,
-            write_buffer: Vec::new(),
-            request: HttpRequest::new(),
-        }
-    }
-}
-
-pub struct Server {
-    listener: HashMap<Token, TcpListener>,
-    connections: HashMap<Token, HttpConnection>,
-    router: Router,
-    config: AppConfig,
-    next_token: usize,
-}
-
-impl Server {
-    pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
-        let mut listeners = HashMap::new();
-        let mut bound_ports = std::collections::HashSet::new();
-        let mut next_token = 0;
-
-        for s_cfg in config.servers {
-            for &port in &s_cfg.ports {
-                let addr_str = format!("{}:{}", s_cfg.host, port);
-                if bound_ports.contains(&addr_str) {
-                    continue;
-                }
-
-                let addr: SocketAddr = addr_str.parse()?;
-                let mut listener = TcpListener::bind(addr)?;
-
-                let token = Token(next_token);
-                // Register the listener to the poll immediately
-                poll.registry()
-                    .register(&mut listener, token, Interest::READABLE)?;
-
-                listeners.insert(token, listener);
-                bound_ports.insert(addr_str);
-                next_token += 1;
-            }
-        }
-        Ok(Server {
-            listener: listeners, // This is your HashMap<Token, TcpListener>
-            connections: HashMap::new(),
-            router: Router::new(),
-            config,
-            next_token, // Start client tokens after the listener tokens
-        })
-    }
-
-    pub fn next_token(&mut self) -> Token {
-        self.next_token += 1;
-        Token(self.next_token)
-    }
-
-    fn handle_accept_connections(&mut self, poll: &mut Poll) -> Result<()> {
-        loop {
-            match self.listener.accept() {
-                Ok((mut stream, addr)) => {
-                    let token = self.next_token();
-
-                    poll.registry()
-                        .register(&mut stream, token, Interest::READABLE)?;
-
-                    self.connections
-                        .insert(token, HttpConnection::new(stream, addr));
-
-                    println!("Accepted connection from {}", addr);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(()),
-                Err(e) => return Err(e.into()),
-            }
-        }
-    }
-
-    pub fn handle_client_connection(
-        &mut self,
-        poll: &Poll,
-        event: &Event,
-        token_client: Token,
-    ) -> Result<()> {
-        let mut connection_closed = false;
-
-        if let Some(conn) = self.connections.get_mut(&token_client) {
-            // --- HANDLE READ ---
-            if event.is_readable() {
-                loop {
-                    let mut temp_buf = [0u8; 1024];
-                    match conn.stream.read(&mut temp_buf) {
-                        Ok(0) => {
-                            connection_closed = true;
-                            break;
-                        }
-                        Ok(n) => {
-                            conn.request.buffer.extend_from_slice(&temp_buf[..n]);
-                        }
-                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                        Err(_) => {
-                            connection_closed = true;
-                            break;
-                        }
-                    }
-                }
-
-                // ######## parse data
-                if !conn.request.buffer.is_empty() {
-                    match conn.request.parse_request() {
-                        Ok(_) => {
-                            if conn.request.state == ParsingState::Complete {
-                                println!("{}", conn.request);
-
-                                // Logic for handling the request goes here...
-                                // conn.write_buffer.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nWelcom To our Server.");
-
-                                let response = self.router.route(&conn.request);
-                                conn.write_buffer.extend_from_slice(&response);
-
-                                conn.request = HttpRequest::new();
-                                poll.registry().reregister(
-                                    &mut conn.stream,
-                                    token_client,
-                                    Interest::READABLE | Interest::WRITABLE,
-                                )?;
-                            }
-                        }
-                        Err(e) if ParseError::IncompleteRequestLine == e => {
-                            // no action needed
-                            println!("state {:?} {}", conn.request, e);
-                        }
-                        Err(e) => {
-                            eprintln!("Parsing error: {}", e);
-                            connection_closed = true;
-                        }
-                    }
-                }
-            }
-
-            // --- HANDLE WRITE ---
-            if event.is_writable() && !conn.write_buffer.is_empty() {
-                match conn.stream.write(&conn.write_buffer) {
-                    Ok(n) => {
-                        conn.write_buffer.drain(..n);
-                        if conn.write_buffer.is_empty() {
-                            poll.registry().reregister(
-                                &mut conn.stream,
-                                token_client,
-                                Interest::READABLE,
-                            )?;
-                        }
-                    }
-                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-                    Err(_) => connection_closed = true,
-                }
-            }
-            // Check for HUP (Hang up)
-            if event.is_read_closed() || event.is_write_closed() {
-                connection_closed = true;
-            }
-
-            if connection_closed {
-                println!("Closing connection for {:?}", token_client);
-                self.connections.remove(&token_client);
-            }
-        }
-        Ok(())
-    }
-}
+use mio::{Events, Poll};
+use server_proxy::config::AppConfig;
+use server_proxy::server::Server;
+use server_proxy::http::Method;
+use server_proxy::error::Result;
 
 fn main() -> Result<()> {
     let config = AppConfig::parse()?;
-
-    dbg!(&config);
-
     let mut poll = Poll::new()?;
-    let mut events = Events::with_capacity(128);
+    let mut events = Events::with_capacity(1024); // Increased capacity for performance
 
-    let addr: SocketAddr = "127.0.0.1:8080".parse()?;
-    // let mut server = TcpListener::bind(addr)?;
-    let mut server = Server::new(config)?;
-    server.router.add_route(Method::GET, "/", handle_home);
+    let mut server = Server::new(config, &poll)?;
+    
+    // Default routes (can be moved to a setup function)
+    server.router.add_route(Method::GET, "/", |_| {
+        let body = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello World!";
+        body.as_bytes().to_vec()
+    });
 
-    const SERVER: Token = Token(0);
-
-    poll.registry()
-        .register(&mut server.listener, SERVER, Interest::READABLE)?;
+    println!("Server running. Monitoring {} listeners...", server.listeners.len());
 
     loop {
         poll.poll(&mut events, None)?;
-        for event in events.iter() {
-            match event.token() {
-                SERVER => {
-                    if let Err(e) = server.handle_accept_connections(&mut poll) {
-                        eprintln!("Listener error: {}", e);
-                    }
-                }
 
-                token_client => {
-                    println!("client token is => {:?}", token_client);
-                    if let Err(e) = server.handle_client_connection(&poll, event, token_client) {
-                        eprintln!("Error handling client {:?}: {}", token_client, e);
-                        server.connections.remove(&token_client);
-                    }
+        for event in events.iter() {
+            let token = event.token();
+
+            if server.listeners.contains_key(&token) {
+                if let Err(e) = server.handle_accept(&mut poll, token) {
+                    eprintln!("Accept Error: {}", e);
+                }
+            } else {
+                if let Err(e) = server.handle_connection(&poll, event, token) {
+                    server.connections.remove(&token);
                 }
             }
         }
     }
-}
-
-fn handle_home(_req: &HttpRequest) -> Vec<u8> {
-    let body = "Welcome Home";
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-        body.len(),
-        body
-    )
-    .into_bytes()
 }

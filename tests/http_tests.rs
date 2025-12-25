@@ -15,18 +15,6 @@ fn test_simple_get_request() {
     assert_eq!(req.headers.get("Host").unwrap(), "localhost");
 }
 
-#[test]
-fn test_query_parameter_parsing() {
-    let mut req = HttpRequest::new();
-    let raw = b"GET /search?query=rust&mode=fast HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    req.buffer.extend_from_slice(raw);
-
-    let _ = req.parse_request();
-
-    assert_eq!(req.url, "/search");
-    assert_eq!(req.query_params.get("query").unwrap(), "rust");
-    assert_eq!(req.query_params.get("mode").unwrap(), "fast");
-}
 
 #[test]
 fn test_fragmented_headers() {

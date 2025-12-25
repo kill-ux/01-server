@@ -1,0 +1,212 @@
+use crate::config::AppConfig;
+use crate::error::Result;
+use crate::http::{HttpRequest, ParseError, ParsingState};
+use crate::router::Router;
+use mio::{
+    Interest, Poll, Token,
+    event::Event,
+    net::{TcpListener, TcpStream},
+};
+use std::collections::HashMap;
+use std::io::{ErrorKind, Read, Write};
+use std::net::SocketAddr;
+
+const READ_BUF_SIZE: usize = 4096;
+
+pub struct HttpConnection {
+    pub stream: TcpStream,
+    pub addr: SocketAddr,
+    pub write_buffer: Vec<u8>,
+    pub request: HttpRequest,
+    pub config_idx: usize,
+}
+
+impl HttpConnection {
+    pub fn new(stream: TcpStream, addr: SocketAddr, config_idx: usize) -> Self {
+        Self {
+            stream,
+            addr,
+            write_buffer: Vec::new(),
+            request: HttpRequest::new(),
+            config_idx,
+        }
+    }
+}
+impl HttpConnection {
+    // Returns true if the connection should be closed
+    fn read_data(&mut self, max_body_size: usize) -> core::result::Result<bool, ParseError> {
+        let mut buf = [0u8; READ_BUF_SIZE]; // READ_BUF_SIZE
+        loop {
+            match self.stream.read(&mut buf) {
+                Ok(0) => return Ok(true), // EOF
+                Ok(n) => {
+                    dbg!(&n);
+                    let absolute_limit: usize = 16_384 + max_body_size;
+                    if self.request.buffer.len() + n > absolute_limit {
+                        return Err(ParseError::PayloadTooLarge);
+                    }
+                    self.request.buffer.extend_from_slice(&buf[..n]);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(_) => return Ok(true),
+            }
+        }
+        Ok(false)
+    }
+
+    fn write_data(&mut self) -> bool {
+        match self.stream.write(&self.write_buffer) {
+            Ok(n) => {
+                self.write_buffer.drain(..n);
+                false
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => false,
+            Err(_) => true,
+        }
+    }
+}
+
+pub struct Server {
+    pub listeners: HashMap<Token, TcpListener>,
+    pub connections: HashMap<Token, HttpConnection>,
+    pub router: Router,
+    pub config: AppConfig,
+    pub listener_to_config: HashMap<Token, usize>,
+    next_token: usize,
+}
+
+impl Server {
+    pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
+        let mut listeners = HashMap::new();
+        let mut listener_to_config = HashMap::new();
+        let mut bound_ports = std::collections::HashSet::new();
+        let mut next_token = 0;
+
+        for (config_idx, s_cfg) in config.servers.iter().enumerate() {
+            for &port in &s_cfg.ports {
+                let addr_str = format!("{}:{}", s_cfg.host, port);
+                if !bound_ports.insert(addr_str.clone()) {
+                    continue;
+                }
+
+                let addr: SocketAddr = addr_str.parse()?;
+                let mut listener = TcpListener::bind(addr)?;
+                let token = Token(next_token);
+
+                poll.registry()
+                    .register(&mut listener, token, Interest::READABLE)?;
+                listeners.insert(token, listener);
+                listener_to_config.insert(token, config_idx);
+                next_token += 1;
+            }
+        }
+
+        Ok(Self {
+            listeners,
+            connections: HashMap::new(),
+            router: Router::new(),
+            listener_to_config,
+            config,
+            next_token: next_token + 1,
+        })
+    }
+
+    pub fn handle_accept(&mut self, poll: &mut Poll, token: Token) -> Result<()> {
+        let config_idx = *self.listener_to_config.get(&token).unwrap();
+        let listener = self.listeners.get_mut(&token).unwrap();
+
+        loop {
+            match listener.accept() {
+                Ok((mut stream, addr)) => {
+                    let client_token = Token(self.next_token);
+                    self.next_token += 1;
+
+                    poll.registry()
+                        .register(&mut stream, client_token, Interest::READABLE)?;
+
+                    self.connections
+                        .insert(client_token, HttpConnection::new(stream, addr, config_idx));
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
+        let mut closed = false;
+
+        if let Some(conn) = self.connections.get_mut(&token) {
+            let s_cfg = &self.config.servers[conn.config_idx];
+            if event.is_readable() {
+                dbg!(1);
+                match conn.read_data(s_cfg.client_max_body_size) {
+                    Ok(is_eof) => closed = is_eof,
+                    Err(ParseError::PayloadTooLarge) => {
+                        let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        conn.write_buffer.extend_from_slice(error_res.as_bytes());
+                        // Change interest to writable to send the error before closing
+                        poll.registry()
+                            .reregister(&mut conn.stream, token, Interest::WRITABLE)?;
+                        return Ok(());
+                    }
+                    Err(_) => closed = true,
+                };
+
+                if !closed && !conn.request.buffer.is_empty() {
+                    // conn.request.state != ParsingState::Complete
+                    // Call parsing/routing logic
+                    Self::process_static_request(poll, token, conn, &self.router)?;
+                }
+            }
+
+            if !closed && event.is_writable() && !conn.write_buffer.is_empty() {
+                closed = conn.write_data();
+                if !closed && conn.write_buffer.is_empty() {
+                    poll.registry()
+                        .reregister(&mut conn.stream, token, Interest::READABLE)?;
+
+                    if !closed && !conn.request.buffer.is_empty() {
+                        // conn.request.state != ParsingState::Complete
+                        // Call parsing/routing logic
+                        Self::process_static_request(poll, token, conn, &self.router)?;
+                    }
+                }
+            }
+
+            if closed || event.is_read_closed() || event.is_write_closed() {
+                // Borrow ends here, so we can remove safely below
+            } else {
+                return Ok(()); // Keep connection alive
+            }
+        }
+
+        self.connections.remove(&token);
+        Ok(())
+    }
+
+    fn process_static_request(
+        poll: &Poll,
+        token: Token,
+        conn: &mut HttpConnection,
+        router: &Router,
+    ) -> Result<()> {
+        match conn.request.parse_request() {
+            Ok(_) if conn.request.state == ParsingState::Complete => {
+                let response = router.route(&conn.request);
+                conn.write_buffer.extend_from_slice(&response);
+                conn.request.finish_request();
+                dbg!(&conn.request);
+
+                poll.registry().reregister(
+                    &mut conn.stream,
+                    token,
+                    Interest::READABLE | Interest::WRITABLE,
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}

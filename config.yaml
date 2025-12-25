@@ -17,13 +17,13 @@ server:
 
 
 server:
-  host: 10.1.8.6
-  ports: [3000]
+  host: 127.0.0.2
+  ports: [8080]
   server_names: new_server
   error_pages: 
     404: /errors/404.html
   routes:
     - path: /
-      methods: [GET]
+      methods: [GET, POST]
       root: ./public
       default_file: index.html
