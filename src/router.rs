@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::http::*;
+use crate::{config::{AppConfig, RouteConfig}, http::*};
 
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
@@ -55,5 +55,13 @@ impl Router {
 
     fn not_found(&self) -> HttpResponse {
         HttpResponse::new(404, "NOT FOUND").set_body(b"404 - Page Not Found".to_vec(), "text/plain")
+    }
+
+    pub fn add_route_config(&mut self, method: Method, host: &str, path: &str, config: RouteConfig) {
+       
+    }
+
+    fn resolve(&self, method: &Method, host: &str, url: &str) -> Option<&RouteConfig> {
+        
     }
 }
