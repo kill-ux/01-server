@@ -11,6 +11,8 @@ fn main() -> Result<()> {
     let config = AppConfig::parse()?;
     let poll = Poll::new()?;
 
+    config.display_config();
+
     // 2. Setup Server & Routes
     let mut server = Server::new(config, &poll)?;
 

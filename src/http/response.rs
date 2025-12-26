@@ -12,7 +12,7 @@ impl HttpResponse {
     pub fn new(status_code: u16, status_text: &str) -> Self {
         Self {
             version: "HTTP/1.1".to_string(),
-            status_code: status_code,
+            status_code,
             status_text: status_text.to_string(),
             headers: HashMap::new(),
             body: Vec::new(),

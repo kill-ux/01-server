@@ -10,6 +10,7 @@ use mio::{
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 const READ_BUF_SIZE: usize = 4096;
 
@@ -85,9 +86,11 @@ impl Server {
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
             // fill Router
             for (path, r_cfg) in &s_cfg.routes {
+                let shared_cfg = Arc::new(r_cfg.clone());
+
                 for method_str in &r_cfg.methods {
                     if let Ok(method) = method_str.parse() {
-                        router.add_route_config(method, &s_cfg.host, path, r_cfg.clone());
+                        router.add_route_config(method, &s_cfg.host, path, Arc::clone(&shared_cfg));
                     }
                 }
             }
@@ -143,12 +146,10 @@ impl Server {
                     }
                 }
                 // 2. Handle Existing Connection Data
-                else {
-                    if let Err(e) = self.handle_connection(&poll, event, token) {
-                        eprintln!("Connection Error: {}", e);
-                        // The removal is already handled inside handle_connection or here
-                        self.connections.remove(&token);
-                    }
+                else if let Err(e) = self.handle_connection(&poll, event, token) {
+                    eprintln!("Connection Error: {}", e);
+                    // The removal is already handled inside handle_connection or here
+                    self.connections.remove(&token);
                 }
             }
         }
@@ -230,7 +231,7 @@ impl Server {
         router: &Router,
     ) -> Result<()> {
         println!("### start prossing a request ###");
-        while let Ok(_) = conn.request.parse_request() {
+        while conn.request.parse_request().is_ok() {
             if conn.request.state == ParsingState::Complete {
                 let request = &conn.request;
                 let host = request
@@ -240,7 +241,7 @@ impl Server {
                     .unwrap_or("default");
                 let response =
                     if let Some(r_cfg) = router.resolve(&request.method, host, &request.url) {
-                        if let Some(_) = &r_cfg.cgi_ext {
+                        if r_cfg.cgi_ext.is_some() {
                             Self::handle_cgi(request, r_cfg)
                         } else {
                             Self::handle_static_file(request, r_cfg)
@@ -277,11 +278,11 @@ impl Server {
         Ok(())
     }
 
-    pub fn handle_cgi(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
+    pub fn handle_cgi(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
         unreachable!("cgi must return response")
     }
 
-    pub fn handle_static_file(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
+    pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
         unreachable!("file must return response")
     }
 }

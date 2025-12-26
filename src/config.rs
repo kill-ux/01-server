@@ -115,6 +115,12 @@ impl AppConfig {
         config
     }
 
+    fn clean_val(val: &str) -> String {
+        val.trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string()
+    }
+
     fn parse_server(lines: &mut Peekable<Lines>) -> ServerConfig {
         let mut server = ServerConfig::default();
 
@@ -125,12 +131,14 @@ impl AppConfig {
                 break;
             }
             let line_to_process = lines.next().unwrap().trim();
-            if let Some((key, val)) = line_to_process.split_once(':') {
-                let val = val.trim();
+            if let Some((key, raw_val)) = line_to_process.split_once(':') {
+                let val = Self::clean_val(raw_val);
+                // let val = val.as_str();
+
                 match key.trim() {
                     "host" => server.host = val.to_string(),
                     "ports" => {
-                        server.ports = Self::parse_list(lines, val, indent + 2)
+                        server.ports = Self::parse_list(lines, &val, indent + 2)
                             .iter()
                             .filter_map(|p| {
                                 let port = p.parse::<u16>();
@@ -142,7 +150,7 @@ impl AppConfig {
                             .collect()
                     }
                     "server_names" => {
-                        server.server_names = Self::parse_list(lines, val, indent + 2)
+                        server.server_names = Self::parse_list(lines, &val, indent + 2)
                     }
                     "default_server" => server.default_server = val == "true",
                     "client_max_body_size" => {
@@ -157,11 +165,10 @@ impl AppConfig {
                             // Inline style: {404: /4.html, 500: /5.html}
                             let clean = val.trim_matches(|c| c == '{' || c == '}');
                             for pair in clean.split(',') {
-                                if let Some((k, v)) = pair.split_once(':') {
-                                    if let Ok(code) = k.trim().parse::<u16>() {
-                                        server.error_pages.insert(code, v.trim().to_string());
+                                if let Some((k, v)) = pair.split_once(':')
+                                    && let Ok(code) = k.trim().parse::<u16>() {
+                                        server.error_pages.insert(code, Self::clean_val(v));
                                     }
-                                }
                             }
                         }
                     }
@@ -181,9 +188,9 @@ impl AppConfig {
             // Handle: [GET, POST] or val1 val2
             return inline_val
                 .trim_matches(|c| c == '[' || c == ']')
-                .split(|c| c == ',' || c == ' ')
+                .split([',', ' '])
+                .map(Self::clean_val)
                 .filter(|s| !s.is_empty())
-                .map(|s| s.trim().to_string())
                 .collect();
         }
 
@@ -203,7 +210,7 @@ impl AppConfig {
 
             let line_data = lines.next().unwrap().trim();
             if line_data.starts_with("- ") {
-                list.push(line_data.trim_start_matches("- ").trim().to_string());
+                list.push(Self::clean_val(line_data.trim_start_matches("- ")));
             }
         }
         list
@@ -229,11 +236,10 @@ impl AppConfig {
             }
 
             let line_to_process = lines.next().unwrap().trim();
-            if let Some((code_str, path_str)) = line_to_process.split_once(':') {
-                if let Ok(code) = code_str.trim().parse::<u16>() {
-                    map.insert(code, path_str.trim().to_string());
+            if let Some((code_str, path_str)) = line_to_process.split_once(':')
+                && let Ok(code) = code_str.trim().parse::<u16>() {
+                    map.insert(code, Self::clean_val(path_str));
                 }
-            }
         }
         map
     }
@@ -258,7 +264,8 @@ impl AppConfig {
                 if !current_path.is_empty() {
                     routes.insert(current_path.clone(), current_route);
                 }
-                current_path = line_data.replace("- path:", "").trim().to_string();
+                let path_val = line_data.trim_start_matches("- path:").trim();
+                current_path = Self::clean_val(path_val);
                 current_route = RouteConfig::default();
             } else if let Some((key, val)) = line_data.split_once(':') {
                 let val = val.trim();
@@ -267,14 +274,15 @@ impl AppConfig {
                         current_route.methods = val
                             .trim_matches(|c| c == '[' || c == ']')
                             .split(",")
-                            .map(|s| s.trim().to_string())
+                            .map(Self::clean_val)
+                            .filter(|s| !s.is_empty())
                             .collect()
                     }
-                    "root" => current_route.root = val.to_string(),
-                    "default_file" => current_route.default_file = val.to_string(),
+                    "root" => current_route.root = Self::clean_val(val),
+                    "default_file" => current_route.default_file = Self::clean_val(val),
                     "autoindex" => current_route.autoindex = val == "true",
-                    "cgi_ext" => current_route.cgi_ext = Some(val.to_string()),
-                    "redirection" => current_route.redirection = Some(val.to_string()),
+                    "cgi_ext" => current_route.cgi_ext = Some(Self::clean_val(val)),
+                    "redirection" => current_route.redirection = Some(Self::clean_val(val)),
                     _ => {}
                 }
             }
@@ -285,5 +293,70 @@ impl AppConfig {
         }
 
         routes
+    }
+
+    pub fn display_config(&self) {
+        // Clear screen (optional, but professional)
+        // print!("\x1b[2J\x1b[1;1H");
+
+        println!("\n\x1b[1;35m 🌐 01_server CONFIGURATION DASHBOARD\x1b[0m");
+        println!(
+            "\x1b[38;5;240m ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m"
+        );
+
+        for (i, server) in self.servers.iter().enumerate() {
+            let server_label = format!("SERVER BLOCK {:02}", i + 1);
+            println!("\n  \x1b[1;37m{}\x1b[0m", server_label);
+            println!("  \x1b[38;5;244m─────────────────────────────────────────\x1b[0m");
+
+            // Info Grid
+            println!(
+                "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mNetwork:\x1b[0m    \x1b[32m{}\x1b[0m \x1b[38;5;244mvia ports\x1b[0m \x1b[1;32m{:?}\x1b[0m",
+                server.host, server.ports
+            );
+            println!(
+                "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mIdentities:\x1b[0m \x1b[36m{}\x1b[0m",
+                server.server_names.join(", ")
+            );
+            println!(
+                "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mLimits:\x1b[0m     \x1b[33m{} bytes\x1b[0m \x1b[38;5;244m(Max Body)\x1b[0m",
+                server.client_max_body_size
+            );
+
+            println!("\n  \x1b[1;37mRouting Table:\x1b[0m");
+
+            // Collect routes and sort them for a stable display
+            let mut sorted_routes: Vec<_> = server.routes.iter().collect();
+            sorted_routes.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (idx, (path, route)) in sorted_routes.iter().enumerate() {
+                let is_last = idx == sorted_routes.len() - 1;
+                let branch = if is_last {
+                    "  └──"
+                } else {
+                    "  ├──"
+                };
+
+                let methods_fmt = route.methods.join("|");
+
+                // Using ANSI background for methods makes them pop
+                println!(
+                    "  \x1b[38;5;244m{}\x1b[0m \x1b[1;37m{:12}\x1b[0m \x1b[48;5;236m\x1b[38;5;250m {} \x1b[0m ➔ \x1b[38;5;244mroot:\x1b[0m \x1b[3m{}\x1b[0m",
+                    branch, path, methods_fmt, route.root
+                );
+
+                if let Some(cgi) = &route.cgi_ext {
+                    let cgi_branch = if is_last { "     " } else { "  │  " };
+                    println!(
+                        "  \x1b[38;5;244m{}  └─ \x1b[0m\x1b[38;5;208mCGI Enabled: {}\x1b[0m",
+                        cgi_branch, cgi
+                    );
+                }
+            }
+        }
+        println!(
+            "\n\x1b[38;5;240m ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\x1b[0m"
+        );
+        println!(" \x1b[1;32m✔\x1b[0m Server initialized and ready for events.\n");
     }
 }

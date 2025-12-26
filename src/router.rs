@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     config::RouteConfig,
@@ -8,7 +8,7 @@ use crate::{
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
-    routes: HashMap<Method, HashMap<String, HashMap<String, RouteConfig>>>,
+    routes: HashMap<Method, HashMap<String, HashMap<String, Arc<RouteConfig>>>>,
 }
 
 impl Default for Router {
@@ -37,21 +37,21 @@ impl Router {
         method: Method,
         host: &str,
         path: &str,
-        config: RouteConfig,
+        config: Arc<RouteConfig>,
     ) {
         self.routes
             .get_mut(&method)
             .unwrap()
             .entry(host.to_string())
-            .or_insert(HashMap::new())
+            .or_default()
             .insert(path.to_string(), config);
     }
 
-    pub fn resolve(&self, method: &Method, host: &str, url: &str) -> Option<&RouteConfig> {
+    pub fn resolve(&self, method: &Method, host: &str, url: &str) -> Option<Arc<RouteConfig>> {
         let host_map = self.routes.get(method)?;
         let paths = host_map.get(host).or_else(|| host_map.get("default"))?;
 
-        let mut best_match: Option<(&String, &RouteConfig)> = None;
+        let mut best_match: Option<(&String, &Arc<RouteConfig>)> = None;
         for (path_prefix, r_cfg) in paths {
             if url.starts_with(path_prefix) {
                 if let Some((prev_path,_ )) = best_match && prev_path.len() > path_prefix.len() {
@@ -61,6 +61,6 @@ impl Router {
             }
         }
 
-        best_match.map(|(_,r_cfg)| r_cfg)
+        best_match.map(|(_,r_cfg)| Arc::clone(r_cfg))
     }
 }
