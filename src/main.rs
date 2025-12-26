@@ -1,7 +1,7 @@
 use mio::{Events, Poll};
 use server_proxy::config::AppConfig;
 use server_proxy::server::Server;
-use server_proxy::http::Method;
+use server_proxy::http::*;
 use server_proxy::error::Result;
 
 fn main() -> Result<()> {
@@ -12,10 +12,7 @@ fn main() -> Result<()> {
     let mut server = Server::new(config, &poll)?;
     
     // Default routes (can be moved to a setup function)
-    server.router.add_route(Method::GET, "/", |_| {
-        let body = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello World!";
-        body.as_bytes().to_vec()
-    });
+    server.router.add_route(Method::GET, "/", handle_index);
 
     println!("Server running. Monitoring {} listeners...", server.listeners.len());
 
@@ -31,9 +28,16 @@ fn main() -> Result<()> {
                 }
             } else {
                 if let Err(e) = server.handle_connection(&poll, event, token) {
+                    eprintln!("Error in connection: {}",e);
                     server.connections.remove(&token);
                 }
             }
         }
     }
+}
+
+
+fn handle_index(req: &HttpRequest) -> HttpResponse {
+    HttpResponse::new(200, "OK")
+        .set_body(b"Welcome to the Home Page".to_vec(), "text/plain")
 }

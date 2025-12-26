@@ -1,4 +1,4 @@
-use server_proxy::http::{HttpRequest, Method, ParsingState, ParseError};
+use server_proxy::http::*;
 
 #[test]
 fn test_simple_get_request() {

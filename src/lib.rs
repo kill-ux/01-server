@@ -1,5 +1,5 @@
 pub mod config;
 pub mod error;
 pub mod server;
-pub mod http;
 pub mod router;
+pub mod http;

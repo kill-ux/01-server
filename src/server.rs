@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::error::Result;
-use crate::http::{HttpRequest, ParseError, ParsingState};
+use crate::http::*;
 use crate::router::Router;
 use mio::{
     Interest, Poll, Token,
@@ -40,7 +40,6 @@ impl HttpConnection {
             match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(true), // EOF
                 Ok(n) => {
-                    dbg!(&n);
                     let absolute_limit: usize = 16_384 + max_body_size;
                     if self.request.buffer.len() + n > absolute_limit {
                         return Err(ParseError::PayloadTooLarge);
@@ -140,7 +139,6 @@ impl Server {
         if let Some(conn) = self.connections.get_mut(&token) {
             let s_cfg = &self.config.servers[conn.config_idx];
             if event.is_readable() {
-                dbg!(1);
                 match conn.read_data(s_cfg.client_max_body_size) {
                     Ok(is_eof) => closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
@@ -157,6 +155,7 @@ impl Server {
                 if !closed && !conn.request.buffer.is_empty() {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
+
                     Self::process_static_request(poll, token, conn, &self.router)?;
                 }
             }
@@ -166,12 +165,6 @@ impl Server {
                 if !closed && conn.write_buffer.is_empty() {
                     poll.registry()
                         .reregister(&mut conn.stream, token, Interest::READABLE)?;
-
-                    if !closed && !conn.request.buffer.is_empty() {
-                        // conn.request.state != ParsingState::Complete
-                        // Call parsing/routing logic
-                        Self::process_static_request(poll, token, conn, &self.router)?;
-                    }
                 }
             }
 
@@ -192,20 +185,35 @@ impl Server {
         conn: &mut HttpConnection,
         router: &Router,
     ) -> Result<()> {
-        match conn.request.parse_request() {
-            Ok(_) if conn.request.state == ParsingState::Complete => {
+        println!("### start prossing a request ###");
+        while let Ok(_) = conn.request.parse_request() {
+            if conn.request.state == ParsingState::Complete {
                 let response = router.route(&conn.request);
-                conn.write_buffer.extend_from_slice(&response);
+                conn.write_buffer.extend_from_slice(&response.to_bytes());
+                println!("{}", conn.request);
                 conn.request.finish_request();
-                dbg!(&conn.request);
 
-                poll.registry().reregister(
-                    &mut conn.stream,
-                    token,
-                    Interest::READABLE | Interest::WRITABLE,
-                )?;
+                if conn.request.buffer.is_empty() {
+                    break;
+                }
+            } else {
+                break;
             }
-            _ => {}
+        }
+
+        if conn.request.state != ParsingState::Complete {
+            println!(
+                "Request is still partial (State: {:?}). Waiting for more data...",
+                conn.request.state
+            );
+        }
+
+        if !conn.write_buffer.is_empty() {
+            poll.registry().reregister(
+                &mut conn.stream,
+                token,
+                Interest::READABLE | Interest::WRITABLE,
+            )?;
         }
         Ok(())
     }

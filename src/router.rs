@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::http::*;
 
-pub type Handler = fn(&HttpRequest) -> Vec<u8>;
+pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
     routes: HashMap<Method, HashMap<String, Handler>>,
@@ -31,7 +31,7 @@ impl Router {
         }
     }
 
-    pub fn route(&self, request: &HttpRequest) -> Vec<u8> {
+    pub fn route(&self, request: &HttpRequest) -> HttpResponse {
         let handler = self
             .routes
             .get(&request.method)
@@ -43,7 +43,8 @@ impl Router {
         }
     }
 
-    fn not_found(&self) -> Vec<u8> {
-        b"HTTP/1.1 404 NOT FOUND\r\nContent-Length: 9\r\n\r\nNot Found".to_vec()
+    fn not_found(&self) -> HttpResponse {
+        HttpResponse::new(404, "NOT FOUND")
+            .set_body(b"404 - Page Not Found".to_vec(), "text/plain")
     }
 }

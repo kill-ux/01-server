@@ -1,5 +1,4 @@
 use std::{
-    cmp,
     collections::HashMap,
     fmt::{self, Display},
 };
@@ -171,25 +170,19 @@ impl HttpRequest {
         if let Some(abs_index) = find_crlf(&self.buffer, self.cursor) {
             let line_bytes = &self.buffer[self.cursor..abs_index];
             if line_bytes.is_empty() {
-                dbg!("ss");
                 self.cursor = abs_index + CRLN_LEN;
                 return Ok(None);
             }
             let line =
                 std::str::from_utf8(line_bytes).map_err(|_| ParseError::MalformedRequestLine)?;
             self.cursor = abs_index + CRLN_LEN;
-            dbg!(&line);
             if let Some(sep) = line.find(':') {
                 let key = line[..sep].trim().to_string();
                 let val = line[sep + 1..].trim().to_string();
-                dbg!("ehh");
                 return Ok(Some((key, val)));
             }
-            dbg!("kkkkk");
-
             Err(ParseError::MalformedRequestLine)
         } else {
-            dbg!("99999");
             Err(ParseError::IncompleteRequestLine)
         }
     }
@@ -221,7 +214,7 @@ impl HttpRequest {
         let available = self.buffer.len() - self.cursor;
 
         if available < content_length {
-            return Err(ParseError::IncompleteRequestLine); // Need more data
+            return Err(ParseError::IncompleteRequestLine);
         }
         self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
         self.cursor += content_length;
@@ -237,7 +230,7 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
     let mut current_pos = 0;
     while let Some(r_pos) = search_area[current_pos..].iter().position(|&b| b == b'\r') {
         let abs_r_pos_in_search = current_pos + r_pos;
-        
+
         if search_area.get(abs_r_pos_in_search + 1) == Some(&b'\n') {
             // Return the absolute position in the original 'buffer'
             return Some(start_offset + abs_r_pos_in_search);
@@ -248,7 +241,7 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
 }
 impl Display for HttpRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "--- HTTP Request ---")?;
+        writeln!(f, "--- HTTP Request ---\n")?;
         // 1. Request Line: GET /path HTTP/1.1
         writeln!(f, "{:?} {} {}", self.method, self.url, self.version)?;
 
@@ -269,7 +262,7 @@ impl Display for HttpRequest {
         } else {
             writeln!(f, "Body: <empty>")?;
         }
+        writeln!(f, "\n--------------------")?;
         writeln!(f, "--------------------")
     }
 }
-

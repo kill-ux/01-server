@@ -1,0 +1,4 @@
+(printf "POST /test HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\n123"; sleep 2; printf "4567890" ;sleep 2 ; printf "GET / HTTP/1.1\r\nHost: 127.0.0.2\r\nConnection: keep-alive\r\n\r\n") | nc 127.0.0.1 8080
+
+printf "GET / HTTP/1.1\r\nHost: 127.0.0.2\r\nConnection: keep-alive\r\n\r\nGET /welcom HTTP/1.1\r\nHost: 127.0.0.2\r\nConnection: keep-alive\r\n\r\nGET /Hello HTTP/1.1\r\nHost: 127.0.0.2\r\nConnection: keep-alive\r\n\r\n" | nc 127.0.0.2 8080
+
