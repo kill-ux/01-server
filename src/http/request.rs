@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display},
+    str::FromStr,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -8,6 +9,29 @@ pub enum Method {
     GET,
     POST,
     DELETE,
+}
+
+impl FromStr for Method {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "GET" => Ok(Method::GET),
+            "POST" => Ok(Method::POST),
+            "DELETE" => Ok(Method::DELETE),
+            _ => Err(ParseError::InvalidMethod),
+        }
+    }
+}
+
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Method::GET => "GET",
+            Method::POST => "POST",
+            Method::DELETE => "DELETE",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 #[derive(Debug, PartialEq)]

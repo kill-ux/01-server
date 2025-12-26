@@ -1,9 +1,11 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RouteConfig};
 use crate::error::Result;
 use crate::http::*;
 use crate::router::Router;
 use mio::{
-    event::Event, net::{TcpListener, TcpStream}, Events, Interest, Poll, Token
+    Events, Interest, Poll, Token,
+    event::Event,
+    net::{TcpListener, TcpStream},
 };
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -78,8 +80,19 @@ impl Server {
         let mut listener_to_config = HashMap::new();
         let mut bound_ports = std::collections::HashSet::new();
         let mut next_token = 0;
+        let mut router = Router::new();
 
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
+            // fill Router
+            for (path, r_cfg) in &s_cfg.routes {
+                for method_str in &r_cfg.methods {
+                    if let Ok(method) = method_str.parse() {
+                        router.add_route_config(method, &s_cfg.host, path, r_cfg.clone());
+                    }
+                }
+            }
+
+            // Bind ports
             for &port in &s_cfg.ports {
                 let addr_str = format!("{}:{}", s_cfg.host, port);
                 if !bound_ports.insert(addr_str.clone()) {
@@ -101,7 +114,7 @@ impl Server {
         Ok(Self {
             listeners,
             connections: HashMap::new(),
-            router: Router::new(),
+            router,
             listener_to_config,
             config,
             next_token: next_token + 1,
@@ -219,9 +232,24 @@ impl Server {
         println!("### start prossing a request ###");
         while let Ok(_) = conn.request.parse_request() {
             if conn.request.state == ParsingState::Complete {
-                let response = router.route(&conn.request);
-                conn.write_buffer.extend_from_slice(&response.to_bytes());
+                let request = &conn.request;
+                let host = request
+                    .headers
+                    .get("Host")
+                    .map(|h| h.split(":").next().unwrap_or(h))
+                    .unwrap_or("default");
+                let response =
+                    if let Some(r_cfg) = router.resolve(&request.method, host, &request.url) {
+                        if let Some(_) = &r_cfg.cgi_ext {
+                            Self::handle_cgi(request, r_cfg)
+                        } else {
+                            Self::handle_static_file(request, r_cfg)
+                        }
+                    } else {
+                        Router::not_found()
+                    };
                 println!("{}", conn.request);
+                conn.write_buffer.extend_from_slice(&response.to_bytes());
                 conn.request.finish_request();
 
                 if conn.request.buffer.is_empty() {
@@ -247,5 +275,13 @@ impl Server {
             )?;
         }
         Ok(())
+    }
+
+    pub fn handle_cgi(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
+        unreachable!("cgi must return response")
+    }
+
+    pub fn handle_static_file(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
+        unreachable!("file must return response")
     }
 }

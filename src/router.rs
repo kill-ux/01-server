@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use crate::{config::{AppConfig, RouteConfig}, http::*};
+use crate::{
+    config::RouteConfig,
+    http::*,
+};
 
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
-    routes: HashMap<Method, HashMap<String, HashMap<String, Handler>>>,
+    routes: HashMap<Method, HashMap<String, HashMap<String, RouteConfig>>>,
 }
 
 impl Default for Router {
@@ -25,43 +28,39 @@ impl Router {
         }
     }
 
-    pub fn add_route(&mut self, method: Method, host: &str, path: &str, handler: Handler) {
+    pub fn not_found() -> HttpResponse {
+        HttpResponse::new(404, "NOT FOUND").set_body(b"404 - Page Not Found".to_vec(), "text/plain")
+    }
+
+    pub fn add_route_config(
+        &mut self,
+        method: Method,
+        host: &str,
+        path: &str,
+        config: RouteConfig,
+    ) {
         self.routes
             .get_mut(&method)
             .unwrap()
             .entry(host.to_string())
-            .or_insert_with(|| HashMap::new())
-            .insert(path.to_string(), handler);
+            .or_insert(HashMap::new())
+            .insert(path.to_string(), config);
     }
 
-    pub fn route(&self, request: &HttpRequest) -> HttpResponse {
-        let host = request
-            .headers
-            .get("Host")
-            .map(|h| h.split(':').next().unwrap_or(h))
-            .unwrap_or("default");
+    pub fn resolve(&self, method: &Method, host: &str, url: &str) -> Option<&RouteConfig> {
+        let host_map = self.routes.get(method)?;
+        let paths = host_map.get(host).or_else(|| host_map.get("default"))?;
 
-        let handler = self
-            .routes
-            .get(&request.method)
-            .and_then(|hosts| hosts.get(host))
-            .and_then(|paths| paths.get(&request.url));
-
-        match handler {
-            Some(handler_func) => handler_func(request),
-            None => self.not_found(),
+        let mut best_match: Option<(&String, &RouteConfig)> = None;
+        for (path_prefix, r_cfg) in paths {
+            if url.starts_with(path_prefix) {
+                if let Some((prev_path,_ )) = best_match && prev_path.len() > path_prefix.len() {
+                    continue;
+                }
+                best_match = Some((path_prefix, r_cfg));
+            }
         }
-    }
 
-    fn not_found(&self) -> HttpResponse {
-        HttpResponse::new(404, "NOT FOUND").set_body(b"404 - Page Not Found".to_vec(), "text/plain")
-    }
-
-    pub fn add_route_config(&mut self, method: Method, host: &str, path: &str, config: RouteConfig) {
-       
-    }
-
-    fn resolve(&self, method: &Method, host: &str, url: &str) -> Option<&RouteConfig> {
-        
+        best_match.map(|(_,r_cfg)| r_cfg)
     }
 }
