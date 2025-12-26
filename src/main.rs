@@ -1,43 +1,37 @@
-use mio::{Events, Poll};
-use server_proxy::config::AppConfig;
-use server_proxy::server::Server;
-use server_proxy::http::*;
-use server_proxy::error::Result;
+use mio::Poll;
+use server_proxy::{
+    config::AppConfig,
+    error::Result,
+    http::{HttpRequest, HttpResponse, Method},
+    server::Server,
+};
 
 fn main() -> Result<()> {
+    // 1. Initialization
     let config = AppConfig::parse()?;
-    let mut poll = Poll::new()?;
-    let mut events = Events::with_capacity(1024); // Increased capacity for performance
+    let poll = Poll::new()?;
 
+    // 2. Setup Server & Routes
     let mut server = Server::new(config, &poll)?;
-    
-    // Default routes (can be moved to a setup function)
-    server.router.add_route(Method::GET, "/", handle_index);
 
-    println!("Server running. Monitoring {} listeners...", server.listeners.len());
+    server
+        .router
+        .add_route(Method::GET, "default", "/", handle_index);
+    server
+        .router
+        .add_route(Method::GET, "default", "/api", handle_api);
 
-    loop {
-        poll.poll(&mut events, None)?;
-
-        for event in events.iter() {
-            let token = event.token();
-
-            if server.listeners.contains_key(&token) {
-                if let Err(e) = server.handle_accept(&mut poll, token) {
-                    eprintln!("Accept Error: {}", e);
-                }
-            } else {
-                if let Err(e) = server.handle_connection(&poll, event, token) {
-                    eprintln!("Error in connection: {}",e);
-                    server.connections.remove(&token);
-                }
-            }
-        }
-    }
+    // 3. Start the Engine
+    server.run(poll)
 }
 
+// Handlers stay clean and isolated
+fn handle_index(_req: &HttpRequest) -> HttpResponse {
+    HttpResponse::new(200, "OK").set_body(b"<h1>Welcome to Home</h1>".to_vec(), "text/html")
+}
 
-fn handle_index(req: &HttpRequest) -> HttpResponse {
+fn handle_api(req: &HttpRequest) -> HttpResponse {
     HttpResponse::new(200, "OK")
-        .set_body(b"Welcome to the Home Page".to_vec(), "text/plain")
+        .set_header("Access-Control-Allow-Origin", "*")
+        .set_body(b"{\"status\": \"active\"}".to_vec(), "application/json")
 }

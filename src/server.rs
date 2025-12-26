@@ -3,9 +3,7 @@ use crate::error::Result;
 use crate::http::*;
 use crate::router::Router;
 use mio::{
-    Interest, Poll, Token,
-    event::Event,
-    net::{TcpListener, TcpStream},
+    event::Event, net::{TcpListener, TcpStream}, Events, Interest, Poll, Token
 };
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -108,6 +106,39 @@ impl Server {
             config,
             next_token: next_token + 1,
         })
+    }
+
+    pub fn run(&mut self, mut poll: Poll) -> Result<()> {
+        let mut events = Events::with_capacity(1024);
+
+        println!(
+            "Server running. Monitoring {} listeners...",
+            self.listeners.len()
+        );
+
+        loop {
+            // Wait for events
+            poll.poll(&mut events, None)?;
+
+            for event in events.iter() {
+                let token = event.token();
+
+                // 1. Handle New Connections
+                if self.listeners.contains_key(&token) {
+                    if let Err(e) = self.handle_accept(&mut poll, token) {
+                        eprintln!("Accept Error: {}", e);
+                    }
+                }
+                // 2. Handle Existing Connection Data
+                else {
+                    if let Err(e) = self.handle_connection(&poll, event, token) {
+                        eprintln!("Connection Error: {}", e);
+                        // The removal is already handled inside handle_connection or here
+                        self.connections.remove(&token);
+                    }
+                }
+            }
+        }
     }
 
     pub fn handle_accept(&mut self, poll: &mut Poll, token: Token) -> Result<()> {
