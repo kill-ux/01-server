@@ -27,10 +27,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "parser"
+version = "0.1.0"
+
+[[package]]
 name = "server_proxy"
 version = "0.1.0"
 dependencies = [
  "mio",
+ "parser",
 ]
 
 [[package]]
