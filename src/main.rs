@@ -1,5 +1,5 @@
 use mio::Poll;
-use parser::lixer::tokens::TokenKind;
+use parser::lexer::tokens::TokenKind;
 use server_proxy::{
     config::AppConfig,
     error::Result,
@@ -8,7 +8,7 @@ use server_proxy::{
 };
 
 fn main() -> Result<()> {
-    let token_kind = TokenKind::EOF;
+    let token_kind = TokenKind::Eof;
     // 1. Initialization
     let config = AppConfig::parse()?;
     let poll = Poll::new()?;
