@@ -34,13 +34,13 @@ impl Router {
 
     pub fn add_route_config(
         &mut self,
-        method: Method,
+        method: &Method,
         host: &str,
         path: &str,
         config: Arc<RouteConfig>,
     ) {
         self.routes
-            .get_mut(&method)
+            .get_mut(method)
             .unwrap()
             .entry(host.to_string())
             .or_default()

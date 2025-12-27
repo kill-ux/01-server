@@ -90,7 +90,8 @@ impl Server {
 
                 for method_str in &r_cfg.methods {
                     if let Ok(method) = method_str.parse() {
-                        router.add_route_config(method, &s_cfg.host, path, Arc::clone(&shared_cfg));
+                        router.add_route_config(&method, &s_cfg.server_name, path, Arc::clone(&shared_cfg));
+                        router.add_route_config(&method, &s_cfg.host, path, Arc::clone(&shared_cfg));
                     }
                 }
             }
@@ -239,6 +240,8 @@ impl Server {
                     .get("Host")
                     .map(|h| h.split(":").next().unwrap_or(h))
                     .unwrap_or("default");
+
+                dbg!(host);
                 let response =
                     if let Some(r_cfg) = router.resolve(&request.method, host, &request.url) {
                         if r_cfg.cgi_ext.is_some() {
@@ -279,10 +282,11 @@ impl Server {
     }
 
     pub fn handle_cgi(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
-        unreachable!("cgi must return response")
+        HttpResponse::new(200, "OK").set_body(b"Hello World".to_vec(), "text/plain")
     }
 
     pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
-        unreachable!("file must return response")
+        
+        HttpResponse::new(200, "OK").set_body(_r_cfg.default_file.as_bytes().to_vec(), "text/plain")
     }
 }

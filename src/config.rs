@@ -46,7 +46,7 @@ pub struct RouteConfig {
 pub struct ServerConfig {
     pub host: String,
     pub ports: Vec<u16>, // Multiple ports
-    pub server_names: Vec<String>,
+    pub server_name: String,
     pub default_server: bool,              // Default server selection
     pub error_pages: HashMap<u16, String>, // Custom error page paths
     pub client_max_body_size: usize,
@@ -63,7 +63,7 @@ impl Default for ServerConfig {
         Self {
             host: "127.0.0.1".to_string(),
             ports: Vec::new(),
-            server_names: Vec::new(),
+            server_name: String::new(),
             default_server: false,
             error_pages: HashMap::new(),
             client_max_body_size: 1024 * 1024, // 1MB default
@@ -149,8 +149,8 @@ impl AppConfig {
                             })
                             .collect()
                     }
-                    "server_names" => {
-                        server.server_names = Self::parse_list(lines, &val, indent + 2)
+                    "server_name" => {
+                        server.server_name = Self::clean_val(&val)
                     }
                     "default_server" => server.default_server = val == "true",
                     "client_max_body_size" => {
@@ -273,7 +273,7 @@ impl AppConfig {
                     "methods" => {
                         current_route.methods = val
                             .trim_matches(|c| c == '[' || c == ']')
-                            .split(",")
+                            .split([',', ' '])
                             .map(Self::clean_val)
                             .filter(|s| !s.is_empty())
                             .collect()
@@ -315,8 +315,8 @@ impl AppConfig {
                 server.host, server.ports
             );
             println!(
-                "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mIdentities:\x1b[0m \x1b[36m{}\x1b[0m",
-                server.server_names.join(", ")
+                "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mIdentitie:\x1b[0m  \x1b[36m{}\x1b[0m",
+                server.server_name
             );
             println!(
                 "  \x1b[1;34m⦿\x1b[0m \x1b[1;37mLimits:\x1b[0m     \x1b[33m{} bytes\x1b[0m \x1b[38;5;244m(Max Body)\x1b[0m",
@@ -336,7 +336,6 @@ impl AppConfig {
                 } else {
                     "  ├──"
                 };
-
                 let methods_fmt = route.methods.join("|");
 
                 // Using ANSI background for methods makes them pop

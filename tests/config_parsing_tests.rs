@@ -27,7 +27,7 @@ fn test_quote_variants() {
     let yaml = r#"
 server:
   host: "127.0.0.1"
-  server_names: 'localhost proxy'
+  server_name: 'localhost proxy'
   routes:
     - path: /static
       root: "./public"
@@ -37,7 +37,7 @@ server:
     let r = s.routes.get("/static").unwrap();
 
     assert_eq!(s.host, "127.0.0.1"); // Double quotes removed
-    assert_eq!(s.server_names[0], "localhost"); // Single quotes from list removed
+    assert_eq!(s.server_name, "localhost"); // Single quotes from list removed
     assert_eq!(r.root, "./public"); // Double quotes in route removed
 }
 
@@ -109,5 +109,5 @@ server:
     let s = &config.servers[0];
     
     assert_eq!(s.ports, vec![8080, 9000]);
-    assert_eq!(s.server_names, vec!["example.com", "web_server"]);
+    assert_eq!(s.server_name, "example.com");
 }

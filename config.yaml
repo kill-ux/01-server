@@ -1,15 +1,15 @@
 # Virtual Server 1: Main Local Website
 server:
-  host: 127.0.0.1
-  ports: [8080, 9000]
-  server_names: "localhost myproxy.local"
+  host: 127.0.0.2
+  ports: [8080]
+  server_name: myproxy.local
   error_pages:
     404: "/errors/404.html"
     500: "/errors/500.html"
   routes:
     # Standard static file routing
     - path: "/"
-      methods: ["GET"]
+      methods: ["GET", "POST"]
       root: "./public"
       default_file: "index.html"
       autoindex: true
@@ -24,12 +24,12 @@ server:
 server:
   host: 127.0.0.2
   ports: [8080]
-  server_names: "new_server"
+  server_name: "new_server"
   error_pages:
     404: "/errors/simple_404.html"
   routes:
     - path: "/"
       methods: ["GET", "POST"]
       root: "./test_site"
-      default_file: "index.html"
+      default_file: "data.json"
       autoindex: false

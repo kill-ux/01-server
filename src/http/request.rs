@@ -263,6 +263,7 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
     }
     None
 }
+
 impl Display for HttpRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "--- HTTP Request ---\n")?;
