@@ -1,6 +1,9 @@
 // use parser::lexer::TokenKind;
 
-use parser::{lexer::{LexerError, Token, Tokenizer}, Parser};
+use parser::{
+    Parser,
+    lexer::{LexerError, Token, Tokenizer},
+};
 
 fn main() -> Result<(), LexerError> {
     let yaml = r#"
@@ -10,8 +13,9 @@ servers:
     - 8081
     - 9000"#;
     let mut tokenizer = Tokenizer::new(yaml);
-    let mut parser = Parser::new(tokenizer)?;
-    let res = parser.parse_all();
-    dbg!(res);
+    dbg!(tokenizer.tokenize());
+    // let mut parser = Parser::new(tokenizer)?;
+    // let res = parser.parse_all();
+    // dbg!(res);
     Ok(())
 }

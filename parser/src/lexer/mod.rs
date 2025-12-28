@@ -50,7 +50,11 @@ impl<'a> Tokenizer<'a> {
 
                 // Now we are at the start of a "real" data line
                 let spaces = self.count_indentation();
-                Ok(Token::Indent(spaces))
+                if let Some(&c) = self.chars.peek() && c != '\n' && c != '#' {
+                    Ok(Token::Indent(spaces))
+                } else {
+                    self.next_token()
+                }
             }
             // 2. Handle Inline Comments (middle of a line)
             '#' => {

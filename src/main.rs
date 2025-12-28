@@ -11,7 +11,8 @@ use server_proxy::{
 
 fn main() -> Result<()> {
     let config_content = read_to_string("config.yaml")?;
-    let mut tokenizer = Tokenizer::new(&config_content);
+    let tokenizer = Tokenizer::new(&config_content);
+    // dbg!(tokenizer.tokenize());
     let mut parser = Parser::new(tokenizer).unwrap();
     let res = parser.parse_all();
     dbg!(res);

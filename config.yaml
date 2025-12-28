@@ -1,16 +1,41 @@
   # Virtual Server 1: Main Local Website
-  server:
-    - host: 127.0.0.2
-      ports: [8080]
-      routes:
-        - path: "/"
-          autoindex: true
-        - path: "/cgi-bin"
-          cgi_ext: ".py"
-      error_pages:
-        - 404: "/errors/404.html"
-      
+server:
 
-    # - host: 127.0.0.2
-    #   server_name: "new_server"
-      
+
+  # - host: 127.0.0.2
+  #   ports: [8080]
+  #   server_name: myproxy.local
+  #   error_pages:
+  #     404: "/errors/404.html"
+  #     500: "/errors/500.html"
+
+
+
+  #   routes:
+  #     - path: "/"
+  #       methods: ["GET", "POST"]
+  #       root: "./public"
+  #       default_file: "index.html"
+  #       autoindex: true
+
+  #     # CGI script routing for Python
+  #     - path: "/cgi-bin"
+  #       methods: ["GET", "POST"]
+  #       root: "./scripts"
+  #       cgi_ext: ".py"
+
+  - host: 127.0.0.2
+    ports: [8080]
+    server_name: "new_server"  # sdfsdf
+    # sdfsdf
+    sss:
+      44: "jj"
+    error_pages:
+      404: "/errors/404.html"
+    # routes:
+    #   - path: "/"
+    #     methods: ["GET", "POST"]
+    #     # dsf
+    #     root: "./test_site"
+    #     default_file: "data.json"
+    #     autoindex: false
