@@ -131,15 +131,8 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.advance().map_err(|e| format!("{:?}", e))?; // Consume '-'
-
-            println!("before {:?}", items);
-            dbg!(&self.lookahead);
             // Parse the value of the list item
-            let res = self.parse_value(list_indent + 2)?;
-            dbg!(&res);
-            items.push(res);
-            println!("after {:?}", items);
-
+            items.push(self.parse_value(list_indent + 2)?);
             // Peek for next item
             self.skip_junk().map_err(|e| format!("{:?}", e))?;
 

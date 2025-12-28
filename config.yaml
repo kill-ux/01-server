@@ -2,30 +2,30 @@
 server:
 
 
-  # - host: 127.0.0.2
-  #   ports: [8080]
-  #   server_name: myproxy.local
-  #   error_pages:
-  #     404: "/errors/404.html"
-  #     500: "/errors/500.html"
-
-
-
-  #   routes:
-  #     - path: "/"
-  #       methods: ["GET", "POST"]
-  #       root: "./public"
-  #       default_file: "index.html"
-  #       autoindex: true
-
-  #     # CGI script routing for Python
-  #     - path: "/cgi-bin"
-  #       methods: ["GET", "POST"]
-  #       root: "./scripts"
-  #       cgi_ext: ".py"
-
   - host: 127.0.0.2
     ports: [8080]
+    server_name: myproxy.local
+    error_pages:
+      404: "/errors/404.html"
+      500: "/errors/500.html"
+
+
+
+    routes:
+      - path: "/"
+        methods: ["GET", "POST"]
+        root: "./public"
+        default_file: "index.html"
+        autoindex: true
+
+      # CGI script routing for Python
+      - path: "/cgi-bin"
+        methods: ["GET", "POST"]
+        root: "./scripts"
+        cgi_ext: ".py"
+
+  - host: 127.0.0.2
+    ports: [8080, 9000]
     server_name: "new_server"  # sdfsdf
     # sdfsdf
     sss:
