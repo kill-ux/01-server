@@ -1,5 +1,7 @@
+use std::fs::read_to_string;
+
 use mio::Poll;
-use parser::lexer::tokens::TokenKind;
+use parser::lexer::Tokenizer;
 use server_proxy::{
     config::AppConfig,
     error::Result,
@@ -8,7 +10,13 @@ use server_proxy::{
 };
 
 fn main() -> Result<()> {
-    let token_kind = TokenKind::Eof;
+
+    let config_content = read_to_string("config.yaml")?;
+    let mut tokenizer = Tokenizer::new(&config_content);
+    dbg!(tokenizer.tokenize());
+
+    return Ok(());
+
     // 1. Initialization
     let config = AppConfig::parse()?;
     let poll = Poll::new()?;

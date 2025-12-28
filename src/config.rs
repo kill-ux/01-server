@@ -1,5 +1,7 @@
 use std::{collections::HashMap, fs::read_to_string, iter::Peekable, str::Lines};
 
+use parser::lexer::{Token, Tokenizer};
+
 use crate::error::Result;
 // #[derive(Deserialize, Debug)]
 // pub struct Route {
@@ -149,9 +151,7 @@ impl AppConfig {
                             })
                             .collect()
                     }
-                    "server_name" => {
-                        server.server_name = Self::clean_val(&val)
-                    }
+                    "server_name" => server.server_name = Self::clean_val(&val),
                     "default_server" => server.default_server = val == "true",
                     "client_max_body_size" => {
                         server.client_max_body_size = val.parse().unwrap_or(1024)
@@ -166,9 +166,10 @@ impl AppConfig {
                             let clean = val.trim_matches(|c| c == '{' || c == '}');
                             for pair in clean.split(',') {
                                 if let Some((k, v)) = pair.split_once(':')
-                                    && let Ok(code) = k.trim().parse::<u16>() {
-                                        server.error_pages.insert(code, Self::clean_val(v));
-                                    }
+                                    && let Ok(code) = k.trim().parse::<u16>()
+                                {
+                                    server.error_pages.insert(code, Self::clean_val(v));
+                                }
                             }
                         }
                     }
@@ -237,9 +238,10 @@ impl AppConfig {
 
             let line_to_process = lines.next().unwrap().trim();
             if let Some((code_str, path_str)) = line_to_process.split_once(':')
-                && let Ok(code) = code_str.trim().parse::<u16>() {
-                    map.insert(code, Self::clean_val(path_str));
-                }
+                && let Ok(code) = code_str.trim().parse::<u16>()
+            {
+                map.insert(code, Self::clean_val(path_str));
+            }
         }
         map
     }

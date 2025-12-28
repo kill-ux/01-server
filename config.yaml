@@ -25,7 +25,8 @@ server:
   host: 127.0.0.2
   ports: [8080]
   server_name: "new_server"
-  error_pages: { 404: "/errors/simple_404.html" }
+  error_pages: 
+   - 404: "/errors/simple_404.html"
     
   routes:
     - path: "/"

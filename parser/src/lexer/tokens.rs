@@ -1,22 +1,18 @@
 #[derive(Debug, PartialEq)]
-pub enum Token {
+pub enum Token<'a> {
     Eof,
     Number(usize),
-    Identifire(String),
+    Identifier(&'a str), // Changed from String to &str
     Indent(usize),
-
     OpenBracket,
     CloseBracket,
-    OpenCurly,
-    CloseCurly,
-
     Colon,
     Comma,
     Dash,
     Space(usize),
     Hash,
     NewLine,
-    Scalar(String)
+    Scalar(&'a str), // Changed from String to &str
 }
 
 // pub struct Token {
@@ -24,8 +20,4 @@ pub enum Token {
 //     pub value: String,
 // }
 
-impl Token {
-    // pub fn new(kind: TokenKind, value: String) -> Self {
-    //     Self { kind, value }
-    // }
-}
+
