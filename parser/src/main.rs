@@ -11,7 +11,7 @@ servers:
     - 9000"#;
     let mut tokenizer = Tokenizer::new(yaml);
     let mut parser = Parser::new(tokenizer)?;
-    let res = parser.parse();
+    let res = parser.parse_all();
     dbg!(res);
     Ok(())
 }
