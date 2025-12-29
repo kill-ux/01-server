@@ -49,11 +49,8 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_junk(&mut self) -> Result<(), LexerError> {
-        loop {
-            match self.lookahead {
-                Token::NewLine => self.advance()?,
-                _ => break,
-            }
+        while let Token::NewLine = self.lookahead {
+            self.advance()?
         }
         Ok(())
     }
@@ -228,16 +225,16 @@ impl<'a> Parser<'a> {
             // 3. Look for the next sibling key
             self.skip_junk().map_err(|e| format!("{:?}", e))?;
 
-            if let Token::Indent(n) = self.lookahead {
-                if n == map_indent {
-                    // This is a sibling key at the same level (e.g., another key at Indent 6)
-                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Indent
+            if let Token::Indent(n) = self.lookahead
+                && n == map_indent
+            {
+                // This is a sibling key at the same level (e.g., another key at Indent 6)
+                self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Indent
 
-                    if let Token::Identifier(next_k) = self.lookahead {
-                        current_key = next_k;
-                        self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Key
-                        continue; // Loop back to handle the Colon
-                    }
+                if let Token::Identifier(next_k) = self.lookahead {
+                    current_key = next_k;
+                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Key
+                    continue; // Loop back to handle the Colon
                 }
             }
 
