@@ -24,6 +24,7 @@
           cgi_ext: ".py"
 
     - host: 127.0.0.2
+      ddd: dfsd
       ports: [8080]
       server_name: "new_server"
       client_max_body_size: 1048576 # 1 MB

@@ -1,11 +1,14 @@
-use std::collections::HashMap;
-
 use crate::YamlValue;
 
 pub trait FromYaml: Sized {
+    fn from_str(source: &str) -> std::result::Result<Self, String> {
+        let mut parser = crate::Parser::new(source).map_err(|e| format!("{:?}", e))?;
+        let yaml_value = parser.parse()?;
+        Self::from_yaml(&yaml_value)
+    }
+
     fn from_yaml(value: &YamlValue) -> std::result::Result<Self, String>;
 
-    // This MUST exist for the macro to work
     fn from_yaml_opt(value: Option<&YamlValue>, name: &str) -> std::result::Result<Self, String> {
         match value {
             Some(v) => Self::from_yaml(v),
@@ -48,10 +51,15 @@ impl<T: FromYaml> FromYaml for Vec<T> {
 }
 
 impl<T: FromYaml> FromYaml for Option<T> {
-    fn from_yaml(v: &YamlValue) -> std::result::Result<Self, String> {
-        match v {
-            YamlValue::Scalar("") => Ok(None),
-            _ => T::from_yaml(v).map(Some),
+    fn from_yaml(value: &YamlValue) -> Result<Self, String> {
+        T::from_yaml(value).map(Some)
+    }
+
+    // This is called by the macro when it's an Option
+    fn from_yaml_opt(value: Option<&YamlValue>, _name: &str) -> Result<Self, String> {
+        match value {
+            Some(v) => Self::from_yaml(v),
+            None => Ok(None),
         }
     }
 }

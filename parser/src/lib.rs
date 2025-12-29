@@ -38,7 +38,8 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(mut tokenizer: Tokenizer<'a>) -> Result<Self, LexerError> {
+    pub fn new(source: &'a str) -> Result<Self, LexerError> {
+        let mut tokenizer = Tokenizer::new(&source);
         let first = tokenizer.next_token()?;
         Ok(Self {
             tokenizer: tokenizer,
@@ -59,11 +60,11 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Result<(), LexerError> {
         self.lookahead = self.tokenizer.next_token()?;
-        println!("DEBUG: Next token is {:?}", self.lookahead); // Uncomment this
+        // println!("DEBUG: Next token is {:?}", self.lookahead); // Uncomment this
         Ok(())
     }
 
-    pub fn parse_all(&mut self) -> Result<YamlValue<'a>, String> {
+    pub fn parse(&mut self) -> Result<YamlValue<'a>, String> {
         self.skip_junk().map_err(|e| format!("{:?}", e))?;
 
         // If the file starts with an Indent, consume it before parsing the first value

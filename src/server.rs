@@ -287,6 +287,6 @@ impl Server {
 
     pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
         
-        HttpResponse::new(200, "OK").set_body(_r_cfg.default_file.as_bytes().to_vec(), "text/plain")
+        HttpResponse::new(200, "OK").set_body(_r_cfg.path.as_bytes().to_vec(), "text/plain")
     }
 }

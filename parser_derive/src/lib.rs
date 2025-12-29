@@ -22,14 +22,27 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                 let inner: Vec<TokenTree> = group.stream().into_iter().collect();
                 for j in 0..inner.len() {
                     if let TokenTree::Punct(ref p) = inner[j] {
-                        // We found the colon!
                         if p.as_char() == ':' && j > 0 {
-                            // Grab ONLY the identifier immediately to the left
                             if let TokenTree::Ident(ref field_ident) = inner[j - 1] {
                                 let field_name = field_ident.to_string();
-                                // Double check it's not a keyword
+
                                 if field_name != "pub" && field_name != "crate" {
-                                    fields.push(field_name);
+                                    // Look ahead to see if 'Option' appears before the next comma
+                                    let mut is_option = false;
+                                    let mut k = j + 1;
+                                    while k < inner.len() {
+                                        let token_str = inner[k].to_string();
+                                        if token_str == "," {
+                                            break;
+                                        } // End of field
+                                        if token_str == "Option" {
+                                            is_option = true;
+                                            break;
+                                        }
+                                        k += 1;
+                                    }
+
+                                    fields.push((field_name, is_option));
                                 }
                             }
                         }
@@ -42,23 +55,30 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
     // 2. Generate the implementation
     // We use absolute paths (::std) to prevent clashes with your local Result type
     let mut generated = format!(
-        "impl ::parser::FromYaml for {name} {{
-            fn from_yaml(value: &::parser::YamlValue) -> ::std::result::Result<Self, ::std::string::String> {{
-                if let ::parser::YamlValue::Map(m) = value {{
-                    ::std::result::Result::Ok(Self {{",
+        "impl parser::FromYaml for {name} {{
+            fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, std::string::String> {{
+                if let parser::YamlValue::Map(m) = value {{
+                    std::result::Result::Ok(Self {{",
         name = struct_name
     );
 
-    for field in fields {
-        generated.push_str(&format!(
-            "{field}: ::parser::FromYaml::from_yaml_opt(m.get(\"{field}\"), \"{field}\")?,",
+    for (field, is_option) in fields {
+        if is_option {
+            // Use from_yaml_opt: returns Ok(None) if key is missing
+            generated.push_str(&format!(
+                "{field}: parser::FromYaml::from_yaml_opt(m.get(\"{field}\"), \"{field}\")?,",
+                field = field
+            ));
+        } else {
+            // Use from_yaml: returns Err if key is missing
+            generated.push_str(&format!(
+            "{field}: parser::FromYaml::from_yaml(m.get(\"{field}\").ok_or_else(|| std::string::String::from(\"Missing required field: {field}\"))?)?,",
             field = field
         ));
+        }
     }
 
-    generated.push_str("}) } else { ::std::result::Result::Err(::std::string::String::from(\"Expected a Map\")) } } }");
-
-    println!("DEBUG GENERATED: {}", generated);
+    generated.push_str("}) } else { std::result::Result::Err(::std::string::String::from(\"Expected a Map\")) } } }");
 
     generated.parse().expect("Generated code was invalid")
 }
