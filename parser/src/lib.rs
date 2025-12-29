@@ -39,10 +39,10 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Result<Self, LexerError> {
-        let mut tokenizer = Tokenizer::new(&source);
+        let mut tokenizer = Tokenizer::new(source);
         let first = tokenizer.next_token()?;
         Ok(Self {
-            tokenizer: tokenizer,
+            tokenizer,
             lookahead: first,
             indent_stack: vec![0],
         })

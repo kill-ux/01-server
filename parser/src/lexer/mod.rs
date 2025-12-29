@@ -50,7 +50,10 @@ impl<'a> Tokenizer<'a> {
 
                 // Now we are at the start of a "real" data line
                 let spaces = self.count_indentation();
-                if let Some(&c) = self.chars.peek() && c != '\n' && c != '#' {
+                if let Some(&c) = self.chars.peek()
+                    && c != '\n'
+                    && c != '#'
+                {
                     Ok(Token::Indent(spaces))
                 } else {
                     self.next_token()
@@ -72,20 +75,20 @@ impl<'a> Tokenizer<'a> {
             '"' | '\'' => self.read_quoted_string(ch),
             '-' => {
                 self.consume();
-                if let Some(&next) = self.chars.peek() {
-                    if next == ' ' || next == '\n' {
-                        return Ok(Token::Dash);
-                    }
+                if let Some(&next) = self.chars.peek()
+                    && (next == ' ' || next == '\n')
+                {
+                    return Ok(Token::Dash);
                 }
                 // If it's not a list dash, it's a scalar starting with '-'
                 Ok(self.read_identifier_from(start))
             }
             ':' => {
                 self.consume();
-                if let Some(&next) = self.chars.peek() {
-                    if next == ' ' || next == '\n' {
-                        return Ok(Token::Colon);
-                    }
+                if let Some(&next) = self.chars.peek()
+                    && (next == ' ' || next == '\n')
+                {
+                    return Ok(Token::Colon);
                 }
                 Ok(self.read_identifier_from(start))
             }
