@@ -1,26 +1,30 @@
 use std::fs::read_to_string;
 
 use mio::Poll;
-use parser::{Parser, lexer::Tokenizer};
+use parser::{FromYaml, Parser, lexer::Tokenizer};
+use parser_derive::YamlStruct;
 use server_proxy::{
-    config::AppConfig,
+    config::{AppConfig, RouteConfig, ServerConfig},
     error::Result,
     http::{HttpRequest, HttpResponse},
     server::Server,
 };
 
-fn main() -> Result<()> {
-    let config_content = read_to_string("config.yaml")?;
-    let tokenizer = Tokenizer::new(&config_content);
-    // dbg!(tokenizer.tokenize());
-    let mut parser = Parser::new(tokenizer).unwrap();
-    let res = parser.parse_all();
-    dbg!(res);
 
+fn main() -> Result<()> {
+    let content = std::fs::read_to_string("config.yaml")?;
+
+    // 2. Run your Lexer/Parser to get the YamlValue enum
+    let mut tokenizer = Tokenizer::new(&content);
+    let mut parser = Parser::new(tokenizer).unwrap();
+    let yaml_tree = parser.parse_all()?;
+    // dbg!(&yaml_tree);
+
+    let config: AppConfig = FromYaml::from_yaml(&yaml_tree)?;
+
+    dbg!(config);
     return Ok(());
 
-    // 1. Initialization
-    let config = AppConfig::parse()?;
     let poll = Poll::new()?;
 
     config.display_config();

@@ -31,11 +31,19 @@ name = "parser"
 version = "0.1.0"
 
 [[package]]
+name = "parser_derive"
+version = "0.1.0"
+dependencies = [
+ "parser",
+]
+
+[[package]]
 name = "server_proxy"
 version = "0.1.0"
 dependencies = [
  "mio",
  "parser",
+ "parser_derive",
 ]
 
 [[package]]

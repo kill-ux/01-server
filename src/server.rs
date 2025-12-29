@@ -85,13 +85,13 @@ impl Server {
 
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
             // fill Router
-            for (path, r_cfg) in &s_cfg.routes {
+            for r_cfg in &s_cfg.routes {
                 let shared_cfg = Arc::new(r_cfg.clone());
 
                 for method_str in &r_cfg.methods {
                     if let Ok(method) = method_str.parse() {
-                        router.add_route_config(&method, &s_cfg.server_name, path, Arc::clone(&shared_cfg));
-                        router.add_route_config(&method, &s_cfg.host, path, Arc::clone(&shared_cfg));
+                        router.add_route_config(&method, &s_cfg.server_name, &r_cfg.path, Arc::clone(&shared_cfg));
+                        router.add_route_config(&method, &s_cfg.host, &r_cfg.path, Arc::clone(&shared_cfg));
                     }
                 }
             }

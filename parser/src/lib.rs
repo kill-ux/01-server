@@ -1,3 +1,5 @@
+pub mod from_yaml;
+pub use from_yaml::*;
 use std::collections::BTreeMap;
 
 use crate::lexer::{LexerError, Token, Tokenizer};
@@ -45,19 +47,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    // fn skip_junk(&mut self) -> Result<(), LexerError> {
-    //     while matches!(self.lookahead, Token::NewLine | Token::Indent(_)) {
-    //         self.advance()?;
-    //     }
-    //     Ok(())
-    // }
-
     fn skip_junk(&mut self) -> Result<(), LexerError> {
         loop {
             match self.lookahead {
                 Token::NewLine => self.advance()?,
-                // Only skip Indents if they are followed by another NewLine or a Comment
-                // This is tricky. A better way is to fix the Lexer to ignore comments.
                 _ => break,
             }
         }
@@ -158,52 +151,35 @@ impl<'a> Parser<'a> {
         Ok(YamlValue::List(items))
     }
 
-    // pub fn parse_list(&mut self, list_indent: usize) -> Result<YamlValue<'a>, String> {
-    //     let mut items = Vec::new();
-
-    //     loop {
-    //         // 1. We MUST be on a Dash to start/continue a list item
-    //         if !matches!(self.lookahead, Token::Dash) {
-    //             break;
-    //         }
-    //         self.advance().map_err(|e| format!("{:?}", e))?; // Consume '-'
-
-    //         // 2. Parse the value.
-    //         // We pass 'list_indent + 2' (usually) or let parse_value find the next Indent.
-    //         items.push(self.parse_value(list_indent)?);
-
-    //         // 3. Look for the next item
-    //         self.skip_junk().map_err(|e| format!("{:?}", e))?;
-
-    //         if let Token::Indent(n) = self.lookahead {
-    //             if n == list_indent {
-    //                 self.advance().map_err(|e| format!("{:?}", e))?;
-    //                 // If the next thing after indent is a Dash, we continue the list
-    //                 if !matches!(self.lookahead, Token::Dash) {
-    //                     break;
-    //                 }
-    //             } else {
-    //                 // Indent doesn't match the list start, so the list is over
-    //                 break;
-    //             }
-    //         } else if !matches!(self.lookahead, Token::Dash) {
-    //             break;
-    //         }
-    //     }
-    //     Ok(YamlValue::List(items))
-    // }
-
     fn parse_inline_list(&mut self) -> Result<YamlValue<'a>, String> {
         self.advance().map_err(|e| format!("{:?}", e))?;
+
         let mut items = Vec::new();
         while !matches!(self.lookahead, Token::CloseBracket)
             && !matches!(self.lookahead, Token::Eof)
         {
+            if matches!(self.lookahead, Token::Indent(_))
+                || matches!(self.lookahead, Token::NewLine)
+            {
+                self.advance().map_err(|e| format!("{:?}", e))?;
+                continue;
+            }
+
             items.push(self.parse_value(0)?);
 
             if matches!(self.lookahead, Token::Comma) {
                 self.advance().map_err(|e| format!("{:?}", e))?;
+
+                while matches!(self.lookahead, Token::Indent(_))
+                    || matches!(self.lookahead, Token::NewLine)
+                {
+                    self.advance().map_err(|e| format!("{:?}", e))?;
+                }
             }
+        }
+
+        if !matches!(self.lookahead, Token::CloseBracket) {
+            return Err("Expected closing bracket ']'".into());
         }
 
         self.advance().map_err(|e| format!("{:?}", e))?;

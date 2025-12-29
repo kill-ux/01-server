@@ -2,7 +2,7 @@
 pub enum Token<'a> {
     Eof,
     Number(usize),
-    Identifier(&'a str), // Changed from String to &str
+    Identifier(&'a str), 
     Indent(usize),
     OpenBracket,
     CloseBracket,
@@ -12,12 +12,7 @@ pub enum Token<'a> {
     Space(usize),
     Hash,
     NewLine,
-    Scalar(&'a str), // Changed from String to &str
+    Scalar(&'a str), 
 }
-
-// pub struct Token {
-//     pub kind: TokenKind,
-//     pub value: String,
-// }
 
 

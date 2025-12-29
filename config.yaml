@@ -1,41 +1,38 @@
-  # Virtual Server 1: Main Local Website
-server:
-
-
-  - host: 127.0.0.2
-    ports: [8080]
-    server_name: myproxy.local
-    error_pages:
-      404: "/errors/404.html"
-      500: "/errors/500.html"
-
-
-
-    routes:
-      - path: "/"
-        methods: ["GET", "POST"]
-        root: "./public"
-        default_file: "index.html"
-        autoindex: true
-
-      # CGI script routing for Python
-      - path: "/cgi-bin"
-        methods: ["GET", "POST"]
-        root: "./scripts"
-        cgi_ext: ".py"
-
-  - host: 127.0.0.2
-    ports: [8080, 9000]
-    server_name: "new_server"  # sdfsdf
+# dsfsdfsd
+  servers:
+    - host: 127.0.0.2
     # sdfsdf
-    sss:
-      44: "jj"
-    error_pages:
-      404: "/errors/404.html"
-    # routes:
-    #   - path: "/"
-    #     methods: ["GET", "POST"]
-    #     # dsf
-    #     root: "./test_site"
-    #     default_file: "data.json"
-    #     autoindex: false
+      ports: [8080, 2000]
+      ddd: dfsd
+      server_name: myproxy.local
+      client_max_body_size: 1048576 # 1 MB
+      error_pages:
+        404: "/errors/404.html"
+        500: "/errors/500.html"
+      routes:
+        # Standard static file routing
+        - path: "/"
+          methods: ["GET", "POST"]
+          root: "./public"
+          default_file: "index.html"
+          autoindex: true
+
+        # CGI script routing for Python
+        - path: "/cgi-bin"
+          methods: ["GET", "POST"]
+          root: "./scripts"
+          cgi_ext: ".py"
+
+    - host: 127.0.0.2
+      ports: [8080]
+      server_name: "new_server"
+      client_max_body_size: 1048576 # 1 MB
+      error_pages: 
+        404: "/errors/simple_404.html" # Remove the dash here!
+        
+      routes:
+        - path: "/"
+          methods: ["GET", "POST"]
+          root: "./test_site"
+          default_file: "data.json"
+          autoindex: false
