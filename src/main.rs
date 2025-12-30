@@ -9,7 +9,7 @@ use server_proxy::{
 
 fn main() -> Result<()> {
     let content = std::fs::read_to_string("config.yaml")?;
-    let config: AppConfig = FromYaml::from_str(&content)?;
+    let config = AppConfig::from_str(&content)?;
 
     let poll = Poll::new()?;
 

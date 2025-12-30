@@ -1,4 +1,5 @@
 pub mod tokens;
+use core::fmt;
 use std::{iter::Peekable, str::Chars};
 pub use tokens::*;
 
@@ -12,6 +13,12 @@ pub struct Tokenizer<'a> {
 pub enum LexerError {
     UnclosedQuote(usize), // Location of the error
     UnexpectedCharacter(char, usize),
+}
+
+impl fmt::Display for LexerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl<'a> Tokenizer<'a> {
@@ -105,7 +112,7 @@ impl<'a> Tokenizer<'a> {
                 Ok(Token::CloseBracket)
             }
 
-            _ if ch.is_alphanumeric() || "/._".contains(ch) => Ok(self.read_identifier()),
+            _ if ch.is_alphanumeric() || "/._{}".contains(ch) => Ok(self.read_identifier()),
 
             _ => Err(LexerError::UnexpectedCharacter(ch, self.pos)),
         }

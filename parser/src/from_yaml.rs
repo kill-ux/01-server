@@ -71,17 +71,47 @@ where
     K::Err: std::fmt::Display,
 {
     fn from_yaml(value: &YamlValue) -> std::result::Result<Self, String> {
-        if let YamlValue::Map(m) = value {
-            let mut map = std::collections::HashMap::new();
-            for (k_str, v) in m {
-                let key = k_str.parse::<K>().map_err(|e| e.to_string())?;
-                let val = V::from_yaml(v)?;
-                map.insert(key, val);
+        match value {
+            YamlValue::Map(m) => {
+                let mut map = std::collections::HashMap::new();
+                for (k_str, v) in m {
+                    let key = k_str.parse::<K>().map_err(|e| e.to_string())?;
+                    let val = V::from_yaml(v)?;
+                    map.insert(key, val);
+                }
+                Ok(map)
             }
-            Ok(map)
-        } else {
-            Err("Expected a Map".into())
+            YamlValue::Scalar(new_map) => {
+                new_map
+                    .trim_matches(&['{', '}'])
+                    .split(&[','])
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|pair| {
+                        let mut split = pair.splitn(2, ':');
+                        let key_str = split.next().unwrap().trim();
+                        let val_str = split
+                            .next()
+                            .ok_or_else(|| format!("Missing value for key {}", key_str))?
+                            .trim();
+                        let key = key_str.parse::<K>().map_err(|e| e.to_string())?;
+                        let val = V::from_yaml(&YamlValue::Scalar(val_str))?;
+                        Ok((key, val))
+                    })
+                    .collect()
+            }
+            _ => Err("Expected a Map".into()),
         }
+        // if let YamlValue::Map(m) = value {
+        //     let mut map = std::collections::HashMap::new();
+        //     for (k_str, v) in m {
+        //         let key = k_str.parse::<K>().map_err(|e| e.to_string())?;
+        //         let val = V::from_yaml(v)?;
+        //         map.insert(key, val);
+        //     }
+        //     Ok(map)
+        // } else {
+        //     Err("Expected a Map".into())
+        // }
     }
 }
 

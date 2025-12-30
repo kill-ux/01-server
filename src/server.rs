@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, RouteConfig, DEFAULT_CLIENT_MAX_BODY_SIZE};
+use crate::config::{AppConfig, RouteConfig};
 use crate::error::Result;
 use crate::http::*;
 use crate::router::Router;
@@ -185,7 +185,7 @@ impl Server {
         if let Some(conn) = self.connections.get_mut(&token) {
             let s_cfg = &self.config.servers[conn.config_idx];
             if event.is_readable() {
-                match conn.read_data(s_cfg.client_max_body_size.unwrap_or(DEFAULT_CLIENT_MAX_BODY_SIZE)) {
+                match conn.read_data(s_cfg.client_max_body_size) {
                     Ok(is_eof) => closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
                         let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
