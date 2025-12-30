@@ -1,7 +1,7 @@
 use crate::config::{AppConfig, RouteConfig};
 use crate::error::Result;
 use crate::http::*;
-use crate::router::Router;
+use crate::router::{Router, RoutingError};
 use mio::{
     Events, Interest, Poll, Token,
     event::Event,
@@ -76,23 +76,25 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
+    pub fn new(mut config: AppConfig, poll: &Poll) -> Result<Self> {
         let mut listeners = HashMap::new();
         let mut listener_to_config = HashMap::new();
         let mut bound_ports = std::collections::HashSet::new();
         let mut next_token = 0;
         let mut router = Router::new();
 
+        if !config.servers.is_empty() {
+            config.servers[0].default_server = true;
+        }
+
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
             // fill Router
             for r_cfg in &s_cfg.routes {
                 let shared_cfg = Arc::new(r_cfg.clone());
 
-                for method_str in &r_cfg.methods {
-                    if let Ok(method) = method_str.parse() {
-                        router.add_route_config(&method, &s_cfg.server_name, &r_cfg.path, Arc::clone(&shared_cfg));
-                        router.add_route_config(&method, &s_cfg.host, &r_cfg.path, Arc::clone(&shared_cfg));
-                    }
+                router.add_route_config(&s_cfg.server_name, &r_cfg.path, Arc::clone(&shared_cfg));
+                if s_cfg.default_server {
+                    router.add_route_config(&s_cfg.host, &r_cfg.path, Arc::clone(&shared_cfg));
                 }
             }
 
@@ -242,16 +244,23 @@ impl Server {
                     .unwrap_or("default");
 
                 dbg!(host);
-                let response =
-                    if let Some(r_cfg) = router.resolve(&request.method, host, &request.url) {
-                        if r_cfg.cgi_ext.is_some() {
-                            Self::handle_cgi(request, r_cfg)
+
+                let response = match router.resolve(&request.method, host, &request.url) {
+                    Ok(r_cfg) => {
+                        if let Some(ref cgi_ext) = r_cfg.cgi_ext {
+                            if request.url.ends_with(cgi_ext) {
+                                Server::handle_cgi(request, r_cfg)
+                            } else {
+                                Server::handle_static_file(request, r_cfg)
+                            }
                         } else {
-                            Self::handle_static_file(request, r_cfg)
+                            Server::handle_static_file(request, r_cfg)
                         }
-                    } else {
-                        Router::not_found()
-                    };
+                    }
+                    Err(RoutingError::MethodNotAllowed) => Router::method_not_allowed(),
+                    Err(RoutingError::NotFound) => Router::not_found(),
+                };
+
                 println!("{}", conn.request);
                 conn.write_buffer.extend_from_slice(&response.to_bytes());
                 conn.request.finish_request();
@@ -286,7 +295,6 @@ impl Server {
     }
 
     pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
-        
         HttpResponse::new(200, "OK").set_body(_r_cfg.path.as_bytes().to_vec(), "text/plain")
     }
 }

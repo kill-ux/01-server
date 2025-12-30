@@ -1,17 +1,12 @@
 servers: 
-  - host: "127.0.0.21"
-    server_nameeee: "localhost"
-    ports: 
-     - 8099
-        - 5554
+  - host: "127.0.0.1"
+    server_name: "myproxy.local"
+    ports: [8080, 3000, 4000]
+    default_server: true
+    client_max_body_size: 1024 # in bytes
+    routes:
+      - path: "/"
 
-        - 4444
-
-    
-#     default_server: true
-#     client_max_body_size: 1024 # in bytes
-#     routes:
-#       - path: "/"
 #         methods: ["GET", "POST"]
 #         root: "./www/html"
 #         default_file: "index.html"

@@ -10,11 +10,13 @@ pub struct RouteConfig {
     #[field(default = "[GET]")]
     pub methods: Vec<String>,
     pub redirection: Option<String>,
+    #[field(default = "./www")]
     pub root: String,
     #[field(default = "index.html")]
     pub default_file: String,
     pub cgi_ext: Option<String>,
-    pub autoindex: Option<bool>,
+    #[field(default = "false")]
+    pub autoindex: bool,
 }
 
 #[derive(Debug, Clone, YamlStruct)]
@@ -138,12 +140,12 @@ impl AppConfig {
                 println!(
                     "  \x1b[38;5;244m{} ├─ Autoindex:\x1b[0m \x1b[{}m{}\x1b[0m",
                     vertical_line,
-                    if route.autoindex.is_some() {
+                    if route.autoindex {
                         "32"
                     } else {
                         "31"
                     },
-                    if route.autoindex.is_some() {
+                    if route.autoindex {
                         "ON"
                     } else {
                         "OFF"
