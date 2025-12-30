@@ -44,7 +44,6 @@ impl<T: FromYaml> FromYaml for Vec<T> {
         if let YamlValue::List(items) = value {
             items.iter().map(|i| T::from_yaml(i)).collect()
         } else {
-            // Support "auto-coaxing": if it's a single value, turn it into a Vec of one
             Ok(vec![T::from_yaml(value)?])
         }
     }
@@ -55,7 +54,6 @@ impl<T: FromYaml> FromYaml for Option<T> {
         T::from_yaml(value).map(Some)
     }
 
-    // This is called by the macro when it's an Option
     fn from_yaml_opt(value: Option<&YamlValue>, _name: &str) -> Result<Self, String> {
         match value {
             Some(v) => Self::from_yaml(v),
@@ -101,17 +99,6 @@ where
             }
             _ => Err("Expected a Map".into()),
         }
-        // if let YamlValue::Map(m) = value {
-        //     let mut map = std::collections::HashMap::new();
-        //     for (k_str, v) in m {
-        //         let key = k_str.parse::<K>().map_err(|e| e.to_string())?;
-        //         let val = V::from_yaml(v)?;
-        //         map.insert(key, val);
-        //     }
-        //     Ok(map)
-        // } else {
-        //     Err("Expected a Map".into())
-        // }
     }
 }
 
@@ -130,5 +117,4 @@ macro_rules! impl_from_yaml_numeric {
     };
 }
 
-// Now apply it to every number type you need
 impl_from_yaml_numeric!(u16, u32, u64, usize, i32, i64, f64);

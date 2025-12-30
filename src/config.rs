@@ -29,6 +29,7 @@ pub struct ServerConfig {
     pub error_pages: HashMap<u16, String>,
     #[field(default = "1048576")]
     pub client_max_body_size: usize,
+    #[field(default = "[]")]
     pub routes: Vec<RouteConfig>,
     #[field(default = "false")]
     pub default_server: bool,

@@ -1,5 +1,3 @@
-extern crate proc_macro;
-// use parser::FromYaml;
 use proc_macro::{Delimiter, TokenStream, TokenTree};
 
 #[proc_macro_derive(YamlStruct, attributes(field))]
@@ -91,9 +89,21 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
         "impl parser::FromYaml for {name} {{
             fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, std::string::String> {{
                 if let parser::YamlValue::Map(m) = value {{
+                    let known_fields = vec![{fields}];
+                    for key in m.keys() {{
+                        if !known_fields.contains(&key.to_string().as_str()) {{
+                            println!(\"\\x1b[1;33mWarning:\\x1b[0m Unknown field '{{}}' found in {name} configuration. Skipping it.\", key);
+                        }}
+                    }}
                     std::result::Result::Ok(Self {{",
-        name = struct_name
+        name = struct_name, fields = fields
+            .iter()
+            .map(|(f, _, _)| format!("\"{}\"", f))
+            .collect::<Vec<String>>()
+            .join(", ")
     );
+
+    
     for (field, is_option, default_value) in fields {
         if is_option {
             generated.push_str(&format!(
@@ -128,3 +138,5 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
 
     generated.parse().expect("Generated code was invalid")
 }
+
+

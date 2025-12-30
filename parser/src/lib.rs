@@ -129,12 +129,16 @@ impl<'a> Parser<'a> {
 
             if let Token::Indent(n) = self.lookahead {
                 let n_val = n;
-                if n_val == list_indent {
+                if n_val >= list_indent {
                     self.advance().map_err(|e| format!("{:?}", e))?; // Consume indent
                     if matches!(self.lookahead, Token::Dash) {
                         continue; // Correctly found next '-'
                     } else {
-                        break; // Same indent but not a dash -> parent map key
+                        // return error: same indent but not a dash
+                        return Err(format!(
+                            "Expected '-' for next list item, found {:?}",
+                            self.lookahead
+                        ));
                     }
                 } else if n_val > list_indent {
                     // This handles cases where extra indents/comments exist

@@ -11,7 +11,7 @@ pub struct Tokenizer<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum LexerError {
-    UnclosedQuote(usize), // Location of the error
+    UnclosedQuote(usize), 
     UnexpectedCharacter(char, usize),
 }
 
