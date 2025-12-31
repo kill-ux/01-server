@@ -1,4 +1,4 @@
-use server_proxy::http::*;
+use server_proxy::http :: *;
 
 #[test]
 fn test_simple_get_request() {
@@ -143,6 +143,107 @@ fn test_response_generation() {
     assert!(s.ends_with("\r\n\r\nHello Rust"));
 }
 
+
+// #[test]
+// fn test_security_traversal() {
+//     let mut req = HttpRequest::new();
+//     // Malicious URL attempting to escape the web root
+//     req.url = "/../../etc/passwd".to_string();
+    
+//     let r_cfg = std::sync::Arc::new(RouteConfig {
+//         root: "./public".to_string(),
+//         ..Default::default()
+//     });
+
+//     // This should trigger your security check in handle_static_file
+//     let response = Server::handle_static_file(&req, r_cfg);
+//     assert_eq!(response.status_code, 403); // Forbidden
+// }
+
+// New tests for request parsing edge cases
+
+#[test]
+fn test_request_line_invalid_http_version() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    assert_eq!(req.version, "HTTP/1.0");
+}
+
+#[test]
+fn test_request_line_malformed_too_few_parts() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET /\r\nHost: example.com\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), ParseError::MalformedRequestLine);
+}
+
+#[test]
+fn test_request_line_malformed_too_many_parts() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.1 EXTRA\r\nHost: example.com\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), ParseError::MalformedRequestLine);
+}
+
+#[test]
+fn test_request_line_url_with_query_params() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET /search?q=test&id=123 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    assert_eq!(req.url, "/search?q=test&id=123");
+}
+
+#[test]
+fn test_headers_missing_final_crlf() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0"); // Missing final \r\n
+    let result = req.parse_request();
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), ParseError::IncompleteRequestLine);
+}
+
+#[test]
+fn test_headers_whitespace_in_value() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.1\r\nTest-Header:   value with spaces   \r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    assert_eq!(req.headers.get("Test-Header").unwrap(), "value with spaces");
+}
+
+#[test]
+fn test_headers_multiple_same_name() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.1\r\nSet-Cookie: a=b\r\nSet-Cookie: c=d\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    // Current implementation overwrites, so we expect the last one
+    assert_eq!(req.headers.get("Set-Cookie").unwrap(), "c=d");
+}
+
+#[test]
+fn test_headers_no_value() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"GET / HTTP/1.1\r\nEmpty-Header:\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    assert_eq!(req.headers.get("Empty-Header").unwrap(), "");
+}
+
+#[test]
+fn test_body_content_length_zero() {
+    let mut req = HttpRequest::new();
+    req.buffer.extend_from_slice(b"POST /test HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    let result = req.parse_request();
+    assert!(result.is_ok());
+    assert_eq!(req.state, ParsingState::Complete);
+    assert!(req.body.is_empty());
+}
 
 // #[test]
 // fn test_security_traversal() {

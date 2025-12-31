@@ -19,6 +19,20 @@ pub struct RouteConfig {
     pub autoindex: bool,
 }
 
+impl Default for RouteConfig {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            methods: vec!["GET".into()],
+            root: "./www".into(),   
+            default_file: "index.html".into(),      
+            autoindex: false,         
+            redirection: None,
+            cgi_ext: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, YamlStruct)]
 pub struct ServerConfig {
     #[field(default = "127.0.0.1")]

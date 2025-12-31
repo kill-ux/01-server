@@ -1,113 +1,123 @@
-// use server_proxy::config::AppConfig;
+use parser::FromYaml;
+use server_proxy::config::{AppConfig, ServerConfig};
 
-// #[test]
-// fn test_config_parsing() {
-//     let yaml = r#"
-// server:
-//   host: "127.0.0.1"
-//   ports: [8080, 9000]
-//   routes:
-//     - path: "/static"
-//       root: "./public"
-//       methods: ["GET", "POST"]
-// "#;
-//     let config = AppConfig::parse_str(yaml);
-//     let server = &config.servers[0];
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     assert_eq!(server.host, "127.0.0.1"); // Check if quotes were removed
-//     assert_eq!(server.ports, vec![8080, 9000]);
+    #[test]
+    fn test_valid_server_config() {
+        let yaml_str = "
+            host: 0.0.0.0
+            ports: [80, 443]
+            server_name: myserv
+            client_max_body_size: 2048
+            routes:
+              - path: /
+                root: ./www
+        ";
+        let config = ServerConfig::from_str(yaml_str).unwrap();
 
-//     let route = server.routes.get("/static").unwrap();
-//     assert_eq!(route.root, "./public");
-//     assert!(route.methods.contains(&"GET".to_string()));
-// }
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.ports, vec![80, 443]);
+        assert_eq!(config.server_name, "myserv");
+        assert_eq!(config.client_max_body_size, 2048);
+        assert_eq!(config.routes[0].path, "/");
+    }
 
-// #[test]
-// fn test_quote_variants() {
-//     let yaml = r#"
-// server:
-//   host: "127.0.0.1"
-//   server_name: 'localhost proxy'
-//   routes:
-//     - path: /static
-//       root: "./public"
-// "#;
-//     let config = AppConfig::parse_str(yaml);
-//     let s = &config.servers[0];
-//     let r = s.routes.get("/static").unwrap();
+    #[test]
+    fn test_full_app_config() {
+        let yaml_str = "
+        servers:
+          - server_name: web1
+            host: 127.0.0.1
+            ports: [8080, 8081]
+            routes:
+              - path: /
+                root: ./web1/www
+          - server_name: web2
+            host: 127.0.0.1
+            ports: [9090]
+            routes:
+              - path: /
+                root: ./web2/www
+        ";
+        let config = AppConfig::from_str(yaml_str).unwrap();
+        assert_eq!(config.servers.len(), 2);
+        assert_eq!(config.servers[0].server_name, "web1");
+        assert_eq!(config.servers[1].ports, vec![9090]);
+    }
+}
 
-//     assert_eq!(s.host, "127.0.0.1"); // Double quotes removed
-//     assert_eq!(s.server_name, "localhost"); // Single quotes from list removed
-//     assert_eq!(r.root, "./public"); // Double quotes in route removed
-// }
+#[test]
+fn test_default_values() {
+    let yaml_str = "server_name: test_default";
+    let config = ServerConfig::from_str(yaml_str).unwrap();
 
+    assert_eq!(config.host, "127.0.0.1");
+    assert_eq!(config.ports, vec![8080]);
+    assert_eq!(config.routes.len(), 0);
+}
 
-// #[test]
-// fn test_messy_formatting() {
-//     let yaml = r#"
-// server:
-//   host: 127.0.0.1
+#[test]
+fn test_unknown_field_handling() {
+    let yaml_str = "
+        host: 127.0.0.1
+        fake_setting: 123
+    ";
+    let config = ServerConfig::from_str(yaml_str);
+    assert!(config.is_ok());
+}
 
-//   # This is a comment in the middle
-//   ports: [8080]
+#[test]
+fn test_error_pages_default() {
+    let yaml_str = "host: 127.0.0.1";
+    let config = ServerConfig::from_str(yaml_str).unwrap();
+    assert!(config.error_pages.is_empty());
+}
 
-//   routes:
-//     - path: "/"
-//       root: ./html
+#[test]
+fn test_invalid_port_type() {
+    let yaml_str = "ports: [80, 'abc']";
+    let result = ServerConfig::from_str(yaml_str);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("invalid digit found in string"));
+}
 
-// "#; // Trailing newlines
-//     let config = AppConfig::parse_str(yaml);
-//     assert_eq!(config.servers.len(), 1);
-//     assert_eq!(config.servers[0].ports, vec![8080]);
-//     assert!(config.servers[0].routes.contains_key("/"));
-// }
+#[test]
+fn test_invalid_client_max_body_size_type() {
+    let yaml_str = "client_max_body_size: abc";
+    let result = ServerConfig::from_str(yaml_str);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("invalid digit found in string"));
+}
 
+#[test]
+fn test_missing_required_path_in_route() {
+    let yaml_str = "
+        routes:
+          - root: /tmp
+    ";
+    let result = ServerConfig::from_str(yaml_str);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Missing required field: path"));
+}
 
-// #[test]
-// fn test_multiple_servers() {
-//     let yaml = r#"
-// server:
-//   host: 127.0.0.1
-//   ports: [80]
-// server:
-//   host: 127.0.0.2
-//   ports: [443]
-// "#;
-//     let config = AppConfig::parse_str(yaml);
-//     assert_eq!(config.servers.len(), 2);
-//     assert_eq!(config.servers[0].host, "127.0.0.1");
-//     assert_eq!(config.servers[1].host, "127.0.0.2");
-// }
+#[test]
+fn test_invalid_autoindex_type_in_route() {
+    let yaml_str = "
+        routes:
+          - path: /
+            autoindex: yes
+    ";
+    let result = ServerConfig::from_str(yaml_str);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Invalid boolean"));
+}
 
-// #[test]
-// fn test_error_page_styles() {
-//     // Style 1: Inline
-//     let yaml_inline = "server:\n  error_pages: {404: /404.html, 500: /500.html}";
-//     let conf1 = AppConfig::parse_str(yaml_inline);
-//     assert_eq!(conf1.servers[0].error_pages.get(&404).unwrap(), "/404.html");
-
-//     // Style 2: Block
-//     let yaml_block = r#"
-// server:
-//   error_pages:
-//     404: /404.html
-//     500: /500.html
-// "#;
-//     let conf2 = AppConfig::parse_str(yaml_block);
-//     assert_eq!(conf2.servers[0].error_pages.get(&404).unwrap(), "/404.html");
-// }
-
-
-// #[test]
-// fn test_list_parsing() {
-//     let yaml = r#"
-// server:
-//   ports: [8080, 9000]
-//   server_names: "example.com web_server"
-// "#;
-//     let config = AppConfig::parse_str(yaml);
-//     let s = &config.servers[0];
-    
-//     assert_eq!(s.ports, vec![8080, 9000]);
-//     assert_eq!(s.server_name, "example.com");
-// }
+#[test]
+fn test_bad_syntax() {
+    let yaml_str = "host: : 127.0.0.1";
+    let result = ServerConfig::from_str(yaml_str);
+    assert!(result.is_err());
+}

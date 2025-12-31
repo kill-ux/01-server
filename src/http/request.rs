@@ -11,6 +11,20 @@ pub enum Method {
     DELETE,
 }
 
+impl Method {
+    pub fn is_allowed(&self, allowed_methods: &Vec<String>) -> bool {
+        allowed_methods.contains(&self.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Method::GET => "GET",
+            Method::POST => "POST",
+            Method::DELETE => "DELETE",
+        }
+    }
+}
+
 impl FromStr for Method {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

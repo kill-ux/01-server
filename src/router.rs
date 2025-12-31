@@ -48,7 +48,6 @@ impl Router {
         let paths = self
             .routes
             .get(host)
-            .or_else(|| self.routes.get("default"))
             .ok_or(RoutingError::NotFound)?;
 
         let mut best_match: Option<(&String, &Arc<RouteConfig>)> = None;
@@ -65,7 +64,7 @@ impl Router {
 
         let (_, r_cfg) = best_match.ok_or(RoutingError::NotFound)?;
 
-        if r_cfg.methods.contains(&method.to_string()) {
+        if method.is_allowed(&r_cfg.methods) {
             Ok(Arc::clone(r_cfg))
         } else {
             Err(RoutingError::MethodNotAllowed)
