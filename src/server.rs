@@ -7,6 +7,7 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
+use tracing::info;
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
@@ -85,6 +86,8 @@ impl Server {
 
         let mut default_check = HashSet::new();
         let mut name_port_check = HashSet::new();
+
+        info!("Setting up server listeners...");
 
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
             // 1. Fill Router first

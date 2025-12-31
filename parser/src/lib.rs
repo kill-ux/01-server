@@ -244,6 +244,7 @@ impl<'a> Parser<'a> {
     ) -> Result<YamlValue<'a>, String> {
         let mut map = BTreeMap::new();
         let mut current_key = first_key;
+        dbg!("Parsing map starting with key:", current_key);
 
         loop {
             // 1. Expect Colon after the key
@@ -259,6 +260,7 @@ impl<'a> Parser<'a> {
             // 2. Determine the value
             // We look ahead to see if the value is nested (greater indent)
             let value = if let Token::Indent(n) = self.lookahead {
+                dbg!(&n, &map_indent, &current_key);
                 if n > map_indent {
                     // Nested content! Consume indent and parse
                     let next_lvl = n;
@@ -269,11 +271,12 @@ impl<'a> Parser<'a> {
                     YamlValue::Scalar("")
                 }
             } else {
-                // Value is on the same line
                 self.parse_value(map_indent)?
             };
 
-            map.insert(current_key, value);
+            if !map.insert(current_key, value).is_none() {
+                return Err(format!("Duplicate key found: {}", current_key));
+            }
 
             // 3. Look for the next sibling key
             self.skip_junk().map_err(|e| format!("{:?}", e))?;

@@ -7,9 +7,10 @@ edition = "2024"
 mio = { version = "1.1.1", features = ["os-poll", "net"] }
 parser = { path = "parser"}
 parser_derive = { path = "parser_derive" }
+tracing ={ path = "tracing" }
 
 
 [workspace]
-members = ["parser", "parser_derive"]
+members = ["parser", "parser_derive", "tracing"]
 
 resolver = "2"

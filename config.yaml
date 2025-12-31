@@ -1,8 +1,5 @@
 servers:
-  - host: "127.0.0.1"
-    server_name: _
-    ports: 3000
-    default_server: true
-  - host: "127.0.0.1"
-    ports: 3000
-    default_server: false
+  - server_name: "LocalServer"
+    - ports:
+          - 8080
+
