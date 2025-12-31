@@ -5,8 +5,8 @@ use crate::{config::RouteConfig, http::*};
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
-    // server_name -> Path -> RouteConfig
-    routes: HashMap<String, HashMap<String, Arc<RouteConfig>>>,
+    // server_name|Path -> RouteConfig
+    routes: HashMap<String, Arc<RouteConfig>>,
 }
 
 impl Default for Router {
@@ -33,32 +33,40 @@ impl Router {
 
     pub fn add_route_config(&mut self, host: &str, path: &str, r_cfg: Arc<RouteConfig>) {
         self.routes
-            .entry(host.to_string())
-            .or_default()
-            .insert(path.to_string(), r_cfg);
+            .entry(format!("{}|{}", host, path))
+            .or_insert(r_cfg);
     }
 
     pub fn resolve(
         &self,
         method: &Method,
         host: &str,
-        url: &str,
+        path: &str,
     ) -> Result<Arc<RouteConfig>, RoutingError> {
-        // let host_map = self.routes.get(method)?;
-        let paths = self
-            .routes
-            .get(host)
-            .ok_or(RoutingError::NotFound)?;
+        // Try exact match first
+        let key = format!("{}|{}", host, path);
+        if let Some(r_cfg) = self.routes.get(key.as_str()) {
+            return if method.is_allowed(&r_cfg.methods) {
+                Ok(Arc::clone(r_cfg))
+            } else {
+                Err(RoutingError::MethodNotAllowed)
+            };
+        }
 
+        // Fallback to prefix matching
         let mut best_match: Option<(&String, &Arc<RouteConfig>)> = None;
-        for (path_prefix, r_cfg) in paths {
-            if url.starts_with(path_prefix) {
-                if let Some((prev_path, _)) = best_match
-                    && prev_path.len() > path_prefix.len()
-                {
-                    continue;
+        for (path_prefix, r_cfg) in &self.routes {
+            if path_prefix.starts_with(&format!("{}|", host)) {
+                let prefix_path = &path_prefix[host.len() + 1..]; // Skip "host|"
+                if path.starts_with(prefix_path) {
+                    if let Some((prev_path, _)) = best_match {
+                        if prev_path.len() < prefix_path.len() {
+                            best_match = Some((path_prefix, r_cfg));
+                        }
+                    } else {
+                        best_match = Some((path_prefix, r_cfg));
+                    }
                 }
-                best_match = Some((path_prefix, r_cfg));
             }
         }
 

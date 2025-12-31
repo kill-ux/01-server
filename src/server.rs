@@ -7,7 +7,7 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -76,31 +76,62 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(mut config: AppConfig, poll: &Poll) -> Result<Self> {
+    pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
         let mut listeners = HashMap::new();
         let mut listener_to_config = HashMap::new();
         let mut bound_ports = std::collections::HashSet::new();
         let mut next_token = 0;
         let mut router = Router::new();
 
-        if !config.servers.is_empty() {
-            config.servers[0].default_server = true;
-        }
+        let mut default_check = HashSet::new();
+        let mut name_port_check = HashSet::new();
 
         for (config_idx, s_cfg) in config.servers.iter().enumerate() {
-            // fill Router
+            // 1. Fill Router first
             for r_cfg in &s_cfg.routes {
                 let shared_cfg = Arc::new(r_cfg.clone());
 
-                router.add_route_config(&s_cfg.server_name, &r_cfg.path, Arc::clone(&shared_cfg));
-                if s_cfg.default_server {
+                if !s_cfg.server_name.is_empty() {
+                    router.add_route_config(
+                        &s_cfg.server_name,
+                        &r_cfg.path,
+                        Arc::clone(&shared_cfg),
+                    );
+                }
+
+                if s_cfg.default_server || s_cfg.server_name.is_empty() {
                     router.add_route_config(&s_cfg.host, &r_cfg.path, Arc::clone(&shared_cfg));
                 }
             }
 
-            // Bind ports
             for &port in &s_cfg.ports {
+                let name = if s_cfg.server_name.is_empty() {
+                    "_"
+                } else {
+                    &s_cfg.server_name
+                };
+
+                let identifier = format!("{}:{}", name, port);
+                
+                if !name_port_check.insert(identifier.clone()) {
+                    return Err(format!(
+                        "Conflict: server_name '{}' is already defined on port {}",
+                        name, port
+                    )
+                    .into());
+                }
+
                 let addr_str = format!("{}:{}", s_cfg.host, port);
+
+                // Check: Is there already a default server for this specific IP:Port?
+                if s_cfg.default_server {
+                    if !default_check.insert(addr_str.clone()) {
+                        return Err(
+                            format!("Multiple default servers defined for {}", addr_str).into()
+                        );
+                    }
+                }
+
                 if !bound_ports.insert(addr_str.clone()) {
                     continue;
                 }
@@ -111,6 +142,7 @@ impl Server {
 
                 poll.registry()
                     .register(&mut listener, token, Interest::READABLE)?;
+
                 listeners.insert(token, listener);
                 listener_to_config.insert(token, config_idx);
                 next_token += 1;
@@ -126,7 +158,6 @@ impl Server {
             next_token: next_token + 1,
         })
     }
-
     pub fn run(&mut self, mut poll: Poll) -> Result<()> {
         let mut events = Events::with_capacity(1024);
 
