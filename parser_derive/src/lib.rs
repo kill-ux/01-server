@@ -21,37 +21,34 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
         {
             let inner: Vec<TokenTree> = group.stream().into_iter().collect();
             for j in 0..inner.len() {
-                if let TokenTree::Punct(ref p) = inner[j] {
-                    if p.as_char() == '#' {
-                        if let TokenTree::Group(g) = &inner[j + 1]
-                            && g.delimiter() == Delimiter::Bracket
+                if let TokenTree::Punct(ref p) = inner[j]
+                    && p.as_char() == '#'
+                {
+                    if let TokenTree::Group(g) = &inner[j + 1]
+                        && g.delimiter() == Delimiter::Bracket
+                    {
+                        let attr_tokens: Vec<TokenTree> = g.stream().into_iter().collect();
+                        if attr_tokens.len() >= 2
+                            && let TokenTree::Ident(ref attr_ident) = attr_tokens[0]
+                            && attr_ident.to_string() == "field"
+                            && let TokenTree::Group(ref attr_group) = attr_tokens[1]
+                            && attr_group.delimiter() == Delimiter::Parenthesis
                         {
-                            let attr_tokens: Vec<TokenTree> = g.stream().into_iter().collect();
-                            if attr_tokens.len() >= 2 {
-                                if let TokenTree::Ident(ref attr_ident) = attr_tokens[0]
-                                    && attr_ident.to_string() == "field"
-                                    && let TokenTree::Group(ref attr_group) = attr_tokens[1]
-                                    && attr_group.delimiter() == Delimiter::Parenthesis
+                            let attr_inner: Vec<TokenTree> =
+                                attr_group.stream().into_iter().collect();
+                            for k in 0..attr_inner.len() {
+                                if let TokenTree::Ident(ref key_ident) = attr_inner[k]
+                                    && key_ident.to_string() == "default"
+                                    && let TokenTree::Punct(ref eq_punct) = attr_inner[k + 1]
+                                    && eq_punct.as_char() == '='
+                                    && let TokenTree::Literal(ref lit) = attr_inner[k + 2]
                                 {
-                                    let attr_inner: Vec<TokenTree> =
-                                        attr_group.stream().into_iter().collect();
-                                    for k in 0..attr_inner.len() {
-                                        if let TokenTree::Ident(ref key_ident) = attr_inner[k]
-                                            && key_ident.to_string() == "default"
-                                            && let TokenTree::Punct(ref eq_punct) =
-                                                attr_inner[k + 1]
-                                            && eq_punct.as_char() == '='
-                                        {
-                                            if let TokenTree::Literal(ref lit) = attr_inner[k + 2] {
-                                                pending_default = Some(lit.to_string());
-                                            }
-                                        }
-                                    }
+                                    pending_default = Some(lit.to_string());
                                 }
                             }
                         }
-                        continue;
                     }
+                    continue;
                 }
 
                 if let TokenTree::Punct(ref p) = inner[j]
@@ -103,7 +100,6 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
             .join(", ")
     );
 
-    
     for (field, is_option, default_value) in fields {
         if is_option {
             generated.push_str(&format!(
@@ -138,5 +134,3 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
 
     generated.parse().expect("Generated code was invalid")
 }
-
-

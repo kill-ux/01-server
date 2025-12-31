@@ -6,6 +6,8 @@ pub enum Token<'a> {
     Indent(usize),
     OpenBracket,
     CloseBracket,
+    OpenBrace,
+    CloseBrace,
     Colon,
     Comma,
     Dash,

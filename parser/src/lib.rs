@@ -93,7 +93,8 @@ impl<'a> Parser<'a> {
             Token::Dash => self.parse_list(current_indent),
 
             // ADD THIS: Missing link to your inline list parser
-            Token::OpenBracket => self.parse_inline_list(),
+            Token::OpenBracket => self.parse_bracket_list(),
+            Token::OpenBrace => self.parse_brace_map(),
 
             Token::Identifier(s) => {
                 let val = *s;
@@ -153,7 +154,55 @@ impl<'a> Parser<'a> {
         Ok(YamlValue::List(items))
     }
 
-    fn parse_inline_list(&mut self) -> Result<YamlValue<'a>, String> {
+    pub fn parse_brace_map(&mut self) -> Result<YamlValue<'a>, String> {
+        self.advance().map_err(|e| format!("{:?}", e))?;
+        let mut map = BTreeMap::new();
+        while !matches!(self.lookahead, Token::CloseBrace)
+            && !matches!(self.lookahead, Token::Eof)
+        {
+            if matches!(self.lookahead, Token::Indent(_))
+                || matches!(self.lookahead, Token::NewLine)
+            {
+                self.advance().map_err(|e| format!("{:?}", e))?;
+                continue;
+            }
+
+            let key = match self.lookahead {
+                Token::Identifier(s) => {
+                    let key = s;
+                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    key
+                }
+                _ => return Err("Expected identifier".into()),
+            };
+
+            if !matches!(self.lookahead, Token::Colon) {
+                return Err("Expected colon".into());
+            }
+            self.advance().map_err(|e| format!("{:?}", e))?;
+
+            let value = self.parse_value(0)?;
+            map.insert(key, value);
+
+            if matches!(self.lookahead, Token::Comma) {
+                self.advance().map_err(|e| format!("{:?}", e))?;
+                while matches!(self.lookahead, Token::Indent(_))
+                    || matches!(self.lookahead, Token::NewLine)
+                {
+                    self.advance().map_err(|e| format!("{:?}", e))?;
+                }
+            }
+        }
+
+        if !matches!(self.lookahead, Token::CloseBrace) {
+            return Err("Expected closing brace '}'".into());
+        }
+
+        self.advance().map_err(|e| format!("{:?}", e))?;
+        Ok(YamlValue::Map(map))
+    }
+
+    fn parse_bracket_list(&mut self) -> Result<YamlValue<'a>, String> {
         self.advance().map_err(|e| format!("{:?}", e))?;
 
         let mut items = Vec::new();

@@ -110,9 +110,16 @@ impl<'a> Tokenizer<'a> {
             ']' => {
                 self.consume();
                 Ok(Token::CloseBracket)
+            },
+            '{' => {
+                self.consume();
+                Ok(Token::OpenBrace)
             }
-
-            _ if ch.is_alphanumeric() || "/._{}".contains(ch) => Ok(self.read_identifier()),
+            '}' => {
+                self.consume();
+                Ok(Token::CloseBrace)
+            }
+            _ if ch.is_alphanumeric() || "/._".contains(ch) => Ok(self.read_identifier()),
 
             _ => Err(LexerError::UnexpectedCharacter(ch, self.pos)),
         }

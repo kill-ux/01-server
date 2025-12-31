@@ -79,24 +79,6 @@ where
                 }
                 Ok(map)
             }
-            YamlValue::Scalar(new_map) => {
-                new_map
-                    .trim_matches(&['{', '}'])
-                    .split(&[','])
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|pair| {
-                        let mut split = pair.splitn(2, ':');
-                        let key_str = split.next().unwrap().trim();
-                        let val_str = split
-                            .next()
-                            .ok_or_else(|| format!("Missing value for key {}", key_str))?
-                            .trim();
-                        let key = key_str.parse::<K>().map_err(|e| e.to_string())?;
-                        let val = V::from_yaml(&YamlValue::Scalar(val_str))?;
-                        Ok((key, val))
-                    })
-                    .collect()
-            }
             _ => Err("Expected a Map".into()),
         }
     }
