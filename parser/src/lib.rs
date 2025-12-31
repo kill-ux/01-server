@@ -84,13 +84,17 @@ impl<'a> Parser<'a> {
                 // If the indent is deeper than our current scope, it's a new block (Map/List)
                 if n_val > current_indent {
                     self.advance().map_err(|e| format!("{:?}", e))?; // Consume the indent
+                    if matches!(self.lookahead, Token::Dash) {
+                        return self.parse_list(n_val, current_indent);
+                    }
                     return self.parse_value(n_val);
+                    // return self.parse_value(n_val);
                 }
                 // If it's a dedent or sibling, we stop here.
                 // This allows the parent map/list to see the Indent token.
                 Ok(YamlValue::Scalar(""))
             }
-            Token::Dash => self.parse_list(current_indent),
+            Token::Dash => self.parse_list(current_indent, current_indent),
 
             // ADD THIS: Missing link to your inline list parser
             Token::OpenBracket => self.parse_bracket_list(),
@@ -115,7 +119,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_list(&mut self, list_indent: usize) -> Result<YamlValue<'a>, String> {
+    pub fn parse_list(
+        &mut self,
+        list_indent: usize,
+        parent_indent: usize,
+    ) -> Result<YamlValue<'a>, String> {
         let mut items = Vec::new();
 
         loop {
@@ -130,22 +138,26 @@ impl<'a> Parser<'a> {
 
             if let Token::Indent(n) = self.lookahead {
                 let n_val = n;
-                if n_val >= list_indent {
-                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume indent
+
+                if n_val == list_indent {
+                    // Perfect alignment!
+                    self.advance().map_err(|e| format!("{:?}", e))?;
                     if matches!(self.lookahead, Token::Dash) {
-                        continue; // Correctly found next '-'
+                        continue;
                     } else {
-                        // return error: same indent but not a dash
                         return Err(format!(
-                            "Expected '-' for next list item, found {:?}",
+                            "Expected '-' for list item, found {:?}",
                             self.lookahead
                         ));
                     }
-                } else if n_val > list_indent {
-                    // This handles cases where extra indents/comments exist
-                    continue;
+                } else if n_val <= parent_indent {
+                    // This is a dedent, the list has ended.
+                    break;
                 } else {
-                    break; // Dedent
+                    return Err(format!(
+                        "Indentation Error: Sequence items must start at the same column (expected {}, found {})",
+                        list_indent, n_val
+                    ));
                 }
             } else if !matches!(self.lookahead, Token::Dash) {
                 break;
@@ -157,8 +169,7 @@ impl<'a> Parser<'a> {
     pub fn parse_brace_map(&mut self) -> Result<YamlValue<'a>, String> {
         self.advance().map_err(|e| format!("{:?}", e))?;
         let mut map = BTreeMap::new();
-        while !matches!(self.lookahead, Token::CloseBrace)
-            && !matches!(self.lookahead, Token::Eof)
+        while !matches!(self.lookahead, Token::CloseBrace) && !matches!(self.lookahead, Token::Eof)
         {
             if matches!(self.lookahead, Token::Indent(_))
                 || matches!(self.lookahead, Token::NewLine)
@@ -244,7 +255,6 @@ impl<'a> Parser<'a> {
     ) -> Result<YamlValue<'a>, String> {
         let mut map = BTreeMap::new();
         let mut current_key = first_key;
-        dbg!("Parsing map starting with key:", current_key);
 
         loop {
             // 1. Expect Colon after the key
@@ -257,22 +267,7 @@ impl<'a> Parser<'a> {
             self.advance().map_err(|e| format!("{:?}", e))?; // Consume ':'
             self.skip_junk().map_err(|e| format!("{:?}", e))?;
 
-            // 2. Determine the value
-            // We look ahead to see if the value is nested (greater indent)
-            let value = if let Token::Indent(n) = self.lookahead {
-                dbg!(&n, &map_indent, &current_key);
-                if n > map_indent {
-                    // Nested content! Consume indent and parse
-                    let next_lvl = n;
-                    self.advance().map_err(|e| format!("{:?}", e))?;
-                    self.parse_value(next_lvl)?
-                } else {
-                    // Sibling or Dedent. The value for this key is effectively null/empty
-                    YamlValue::Scalar("")
-                }
-            } else {
-                self.parse_value(map_indent)?
-            };
+            let value = self.parse_value(map_indent)?;
 
             if !map.insert(current_key, value).is_none() {
                 return Err(format!("Duplicate key found: {}", current_key));
@@ -281,23 +276,56 @@ impl<'a> Parser<'a> {
             // 3. Look for the next sibling key
             self.skip_junk().map_err(|e| format!("{:?}", e))?;
 
-            if let Token::Indent(n) = self.lookahead
-                && n == map_indent
-            {
-                // This is a sibling key at the same level (e.g., another key at Indent 6)
-                self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Indent
+            if let Token::Indent(n) = self.lookahead {
+                if n == map_indent {
+                    // Perfect alignment!
+                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Indent
 
-                if let Token::Identifier(next_k) = self.lookahead {
-                    current_key = next_k;
-                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Key
-                    continue; // Loop back to handle the Colon
+                    match self.lookahead {
+                        Token::Identifier(s) => {
+                            current_key = s;
+                            self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Key
+                            continue;
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Expected identifier for map key, found {:?}",
+                                self.lookahead
+                            ));
+                        }
+                    }
+                } else if n > map_indent {
+                    return Err(format!(
+                        "Indentation Error: Map keys must align at the same column (expected {}, found {})",
+                        map_indent, n
+                    ));
+                } else {
+                    // Dedent or end of map
+                    break;
                 }
             }
 
-            // If we reach here, the next token is not an indent at our level.
-            // We BREAK and let the parent handle the dedent.
             break;
         }
         Ok(YamlValue::Map(map))
     }
 }
+
+// map.insert(current_key, value);
+
+// 2. Determine the value
+// We look ahead to see if the value is nested (greater indent)
+// let value = if let Token::Indent(n) = self.lookahead {
+//     dbg!(&n, &map_indent, &current_key);
+//     if n > map_indent {
+//         // Nested content! Consume indent and parse
+//         let next_lvl = n;
+//         self.advance().map_err(|e| format!("{:?}", e))?;
+//         self.parse_value(next_lvl)?
+//     } else {
+//         // Sibling or Dedent. The value for this key is effectively null/empty
+//         YamlValue::Scalar("")
+//     }
+// } else {
+//     self.parse_value(map_indent)?
+// };
