@@ -83,12 +83,16 @@ impl<'a> Parser<'a> {
                 let n_val = *n;
                 // If the indent is deeper than our current scope, it's a new block (Map/List)
                 if n_val > current_indent {
-                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the indent
-                    if matches!(self.lookahead, Token::Dash) {
-                        return self.parse_list(n_val, current_indent);
+                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    match &self.lookahead {
+                        Token::Dash => return self.parse_list(n_val, current_indent),
+                        Token::Identifier(s) => {
+                            let key = *s;
+                            self.advance().map_err(|e| format!("{:?}", e))?;
+                            return self.parse_map(key, n_val);
+                        }
+                        _ => return self.parse_value(n_val),
                     }
-                    return self.parse_value(n_val);
-                    // return self.parse_value(n_val);
                 }
                 // If it's a dedent or sibling, we stop here.
                 // This allows the parent map/list to see the Indent token.
@@ -107,7 +111,14 @@ impl<'a> Parser<'a> {
                     // If it's a key: value pair, start a map
                     self.parse_map(val, current_indent)
                 } else {
-                    Ok(YamlValue::Scalar(val))
+                    // Ok(YamlValue::Scalar(val))
+                    let mut full_scalar = val.to_string();
+                    while let Token::Identifier(next_part) = self.lookahead {
+                        full_scalar.push(' ');
+                        full_scalar.push_str(next_part);
+                        self.advance().map_err(|e| format!("{:?}", e))?;
+                    }
+                    Ok(YamlValue::Scalar(Box::leak(full_scalar.into_boxed_str())))
                 }
             }
             Token::Scalar(s) => {
@@ -265,6 +276,14 @@ impl<'a> Parser<'a> {
                 ));
             }
             self.advance().map_err(|e| format!("{:?}", e))?; // Consume ':'
+
+            if matches!(self.lookahead, Token::Dash) {
+                return Err(format!(
+                    "It is forbidden to specify block composed value at the same line as key: '{}'",
+                    current_key
+                ));
+            }
+
             self.skip_junk().map_err(|e| format!("{:?}", e))?;
 
             let value = self.parse_value(map_indent)?;
@@ -310,22 +329,3 @@ impl<'a> Parser<'a> {
         Ok(YamlValue::Map(map))
     }
 }
-
-// map.insert(current_key, value);
-
-// 2. Determine the value
-// We look ahead to see if the value is nested (greater indent)
-// let value = if let Token::Indent(n) = self.lookahead {
-//     dbg!(&n, &map_indent, &current_key);
-//     if n > map_indent {
-//         // Nested content! Consume indent and parse
-//         let next_lvl = n;
-//         self.advance().map_err(|e| format!("{:?}", e))?;
-//         self.parse_value(next_lvl)?
-//     } else {
-//         // Sibling or Dedent. The value for this key is effectively null/empty
-//         YamlValue::Scalar("")
-//     }
-// } else {
-//     self.parse_value(map_indent)?
-// };

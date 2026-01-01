@@ -1,3 +1,5 @@
 servers:
   - server_name: "LocalServer"
-    ports: - 2222    - 6666
+    zzzzz: kk kk kk
+    ports: 
+      - 2222  6666

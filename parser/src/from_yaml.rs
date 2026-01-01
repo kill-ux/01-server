@@ -90,7 +90,7 @@ macro_rules! impl_from_yaml_numeric {
             impl FromYaml for $t {
                 fn from_yaml(v: &YamlValue) -> std::result::Result<Self, String> {
                     match v {
-                        YamlValue::Scalar(s) => s.parse::<$t>().map_err(|e| e.to_string()),
+                        YamlValue::Scalar(s) => s.parse::<$t>().map_err(|e| format!("{} | {s}", e)),
                         _ => Err(format!("Expected a numeric scalar for {}", stringify!($t))),
                     }
                 }

@@ -7,11 +7,12 @@ pub struct Tokenizer<'a> {
     source: &'a str,
     chars: Peekable<Chars<'a>>,
     pos: usize,
+    is_at_line_start: bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum LexerError {
-    UnclosedQuote(usize), 
+    UnclosedQuote(usize),
     UnexpectedCharacter(char, usize),
 }
 
@@ -27,6 +28,7 @@ impl<'a> Tokenizer<'a> {
             source,
             chars: source.chars().peekable(),
             pos: 0,
+            is_at_line_start: true,
         }
     }
 
@@ -44,6 +46,7 @@ impl<'a> Tokenizer<'a> {
 
     pub fn next_token(&mut self) -> Result<Token<'a>, LexerError> {
         let start = self.pos;
+
         let ch = match self.chars.peek() {
             Some(&c) => c,
             None => return Ok(Token::Eof),
@@ -61,6 +64,7 @@ impl<'a> Tokenizer<'a> {
                     && c != '\n'
                     && c != '#'
                 {
+                    self.is_at_line_start = true;
                     Ok(Token::Indent(spaces))
                 } else {
                     self.next_token()
@@ -82,13 +86,19 @@ impl<'a> Tokenizer<'a> {
             '"' | '\'' => self.read_quoted_string(ch),
             '-' => {
                 self.consume();
-                if let Some(&next) = self.chars.peek()
-                    && (next == ' ' || next == '\n')
-                {
-                    return Ok(Token::Dash);
+
+                let is_dash = if let Some(&next) = self.chars.peek() {
+                    next == ' ' || next == '\n'
+                } else {
+                    true // EOF after '-'
+                };
+
+                if is_dash && self.is_at_line_start {
+                    self.is_at_line_start = false; 
+                    Ok(Token::Dash)
+                } else {
+                    Ok(self.read_identifier_from(start))
                 }
-                // If it's not a list dash, it's a scalar starting with '-'
-                Ok(self.read_identifier_from(start))
             }
             ':' => {
                 self.consume();
@@ -110,7 +120,7 @@ impl<'a> Tokenizer<'a> {
             ']' => {
                 self.consume();
                 Ok(Token::CloseBracket)
-            },
+            }
             '{' => {
                 self.consume();
                 Ok(Token::OpenBrace)
