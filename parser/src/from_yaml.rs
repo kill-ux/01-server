@@ -26,6 +26,8 @@ impl FromYaml for String {
     }
 }
 
+
+
 impl FromYaml for bool {
     fn from_yaml(v: &YamlValue) -> std::result::Result<Self, YamlError> {
         match v {

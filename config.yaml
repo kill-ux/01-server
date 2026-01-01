@@ -1,11 +1,10 @@
 servers:
-  - ports: [8080]
-    # server_name: alpha.com
-
-  - ports: [8080]
-    server_name: beta.com
-
   - host: 127.0.0.1
     ports: [8080]
-    server_name: gamma.com 
-    default_server: true
+    server_name: kk
+  - host: 127.0.0.1
+    ports: [4444]
+    server_name: kk
+  - host: 127.0.0.2
+    ports: [4444]
+    server_name: kk

@@ -78,6 +78,9 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
+        dbg!("ss");
+        let ip6: SocketAddr = "[::1]:8080".parse()?;
+        dbg!("hh");
         let mut listeners = HashMap::new();
         let mut listener_to_config = HashMap::new();
         let mut bound_ports = std::collections::HashSet::new();
@@ -115,7 +118,7 @@ impl Server {
                 };
 
                 let identifier = format!("{}:{}", name, port);
-                
+
                 if !name_port_check.insert(identifier.clone()) {
                     return Err(format!(
                         "Conflict: server_name '{}' is already defined on port {}",

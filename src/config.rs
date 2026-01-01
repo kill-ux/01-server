@@ -1,9 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    net::IpAddr,
+};
 
 use parser_derive::YamlStruct;
 use proxy_log::{errors, warn};
 
-use crate::error::CleanError;
+use crate::{error::CleanError, http::Method};
 
 pub const DEFAULT_CLIENT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 
@@ -67,12 +70,11 @@ impl AppConfig {
 
         // Use drain to take ownership and rebuild the list
         for s_cfg in self.servers.drain(..) {
-            
             let mut is_valid = true;
             let mut local_ports = HashSet::new();
 
             // 1. IP Validation
-            if s_cfg.host.parse::<std::net::IpAddr>().is_err() {
+            if validate_host(&s_cfg.host).is_err() {
                 errors!("Invalid IP address format: {}", s_cfg.host);
                 is_valid = false;
             }
@@ -119,11 +121,16 @@ impl AppConfig {
 
                 // Check methods
                 for method in &route.methods {
-                    match method.as_str() {
-                        "GET" | "POST" | "DELETE" => {}
+                    match method.parse::<Method>() {
+                        Ok(_) => {}
                         _ => {
-                            errors!("Unsupported method '{}' in route '{}'", method, route.path);
+                            errors!(
+                                "Invalid method '{}' found in config for server '{}'",
+                                method,
+                                s_cfg.server_name
+                            );
                             is_valid = false;
+                            break;
                         }
                     }
                 }
@@ -131,6 +138,8 @@ impl AppConfig {
 
             if is_valid {
                 valid_servers.push(s_cfg);
+            } else {
+                warn!("Server has misconfiguration: Skiped");
             }
         }
 
@@ -274,4 +283,16 @@ impl AppConfig {
         );
         println!(" \x1b[1;32m✔\x1b[0m Configuration loaded successfully - Ready for requests!\n");
     }
+}
+
+pub fn validate_host(host_str: &str) -> Result<IpAddr, CleanError> {
+    let sanitized = if host_str.starts_with('[') && host_str.ends_with(']') {
+        &host_str[1..host_str.len() - 1]
+    } else {
+        host_str
+    };
+
+    sanitized
+        .parse::<IpAddr>()
+        .map_err(|_| CleanError::from(format!("Invalid IP address format: '{}'", host_str)))
 }
