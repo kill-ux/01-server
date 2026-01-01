@@ -1,10 +1,11 @@
 servers:
-  - host: "127.0.0.1"
-    server_name: "server loacl"
-    ports: ["8080", "8081"]
-    routes:
-      - path: "/"
-        methods: ["GET", "POST"]
-        root: "/var/www/html"
-        index: "index.html"
-        autoindex: true
+  - ports: [8080]
+    # server_name: alpha.com
+
+  - ports: [8080]
+    server_name: beta.com
+
+  - host: 127.0.0.1
+    ports: [8080]
+    server_name: gamma.com 
+    default_server: true

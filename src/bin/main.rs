@@ -9,16 +9,11 @@ use server_proxy::{
 
 fn main() -> Result<()> {
     let content = std::fs::read_to_string("config.yaml")?;
-    let config = AppConfig::from_str(&content)?;
-
+    let mut config = AppConfig::from_str(&content)?;
     let poll = Poll::new()?;
-
+    config.validate()?;
     config.display_config();
-
-    // 2. Setup Server & Routes
     let mut server = Server::new(config, &poll)?;
-
-    // 3. Start the Engine
     server.run(poll)
 }
 
