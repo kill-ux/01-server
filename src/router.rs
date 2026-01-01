@@ -45,6 +45,7 @@ impl Router {
     ) -> Result<Arc<RouteConfig>, RoutingError> {
         // Try exact match first
         let key = format!("{}|{}", host, path);
+        dbg!(self.routes.keys());
         if let Some(r_cfg) = self.routes.get(key.as_str()) {
             return if method.is_allowed(&r_cfg.methods) {
                 Ok(Arc::clone(r_cfg))

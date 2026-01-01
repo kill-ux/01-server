@@ -55,7 +55,7 @@ impl fmt::Display for YamlError {
             YamlError::Indentation { expected, found } => {
                 write!(
                     f,
-                    "Indentation Error: Expected column {}, found {}",
+                    "Indentation Error: Expected {}, found {}",
                     expected, found
                 )
             }
@@ -161,14 +161,21 @@ impl<'a> Parser<'a> {
                     // If it's a key: value pair, start a map
                     self.parse_map(val, current_indent)
                 } else {
+                    // if just one identifier, treat as scalar if more then one word throw error
+                    
                     // Ok(YamlValue::Scalar(val))
-                    let mut full_scalar = val.to_string();
+                    let mut word_count = 1;
                     while let Token::Identifier(next_part) = self.lookahead {
-                        full_scalar.push(' ');
-                        full_scalar.push_str(next_part);
+                        word_count += 1;
+                        if word_count > 1 {
+                            return Err(YamlError::Generic(format!(
+                                "Multiple words found for scalar value: '{} {}'",
+                                val, next_part
+                            )));
+                        }
                         self.advance()?;
                     }
-                    Ok(YamlValue::Scalar(Box::leak(full_scalar.into_boxed_str())))
+                    Ok(YamlValue::Scalar(val)) // Always return as scalar for now)
                 }
             }
             Token::Scalar(s) => {
@@ -346,7 +353,7 @@ impl<'a> Parser<'a> {
 
             if matches!(self.lookahead, Token::Dash) {
                 return Err(YamlError::UnexpectedToken {
-                    expected: "-".to_string(),
+                    expected: "new line".to_string(),
                     found: format!("{:?}", self.lookahead),
                 });
             }
