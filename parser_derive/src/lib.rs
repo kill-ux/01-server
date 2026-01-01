@@ -84,7 +84,7 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
     // 2. Generate FromYaml impl
     let mut generated = format!(
         "impl parser::FromYaml for {name} {{
-            fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, std::string::String> {{
+            fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, parser::YamlError> {{
                 if let parser::YamlValue::Map(m) = value {{
                     let known_fields = vec![{fields}];
                     for key in m.keys() {{
@@ -113,8 +113,8 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                             Some(v) => parser::FromYaml::from_yaml(v)?, 
                             None => {{
                                 // Reuse your actual Parser here!
-                                let mut p = parser::Parser::new(\"{clean_def}\").map_err(|e| e.to_string())?;
-                                let default_yaml = p.parse().map_err(|e| e.to_string())?;
+                                let mut p = parser::Parser::new(\"{clean_def}\")?;
+                                let default_yaml = p.parse()?;
                                 parser::FromYaml::from_yaml(&default_yaml)?
                             }}
                         }},",
@@ -124,13 +124,13 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
         } else {
             // Required field logic
             generated.push_str(&format!(
-            "{field}: parser::FromYaml::from_yaml(m.get(\"{field}\").ok_or_else(|| std::string::String::from(\"Missing required field: {field}\"))?)?,",
+            "{field}: parser::FromYaml::from_yaml(m.get(\"{field}\").ok_or_else(||  parser::YamlError::Generic(\"Missing required field: {field}\".into()))?)?,",
             field = field
         ));
         }
     }
 
-    generated.push_str("}) } else { std::result::Result::Err(::std::string::String::from(\"Expected a Map\")) } } }");
+    generated.push_str("}) } else { std::result::Result::Err(parser::YamlError::Generic(\"Expected a Map\".into())) } } }");
 
     generated.parse().expect("Generated code was invalid")
 }

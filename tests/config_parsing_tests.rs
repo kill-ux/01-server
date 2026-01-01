@@ -3,7 +3,13 @@ use server_proxy::config::{AppConfig, ServerConfig};
 
 #[cfg(test)]
 mod tests {
+    use server_proxy::error::CleanError;
+
     use super::*;
+
+    fn err_to_str(e: CleanError) -> String {
+        format!("{}", e)
+    }
 
     #[test]
     fn test_valid_server_config() {
@@ -59,7 +65,7 @@ servers:
 servers:
   - host "127.0.0.1"
 "#;
-        let err = AppConfig::from_str(yaml).unwrap_err();
+        let err = err_to_str((AppConfig::from_str(yaml).unwrap_err()).into());
         println!("{}", err);
         assert!(err.contains("Expected a Map") || err.contains("Expected"));
     }
@@ -85,7 +91,7 @@ servers:
     ports: [8080]
    server_name: "bad_indent"
 "#;
-        let err = AppConfig::from_str(yaml_bad).unwrap_err();
+        let err = err_to_str((AppConfig::from_str(yaml_bad).unwrap_err()).into());
         println!("{}", err);
         assert!(err.contains("Expected '-' for next item") || err.contains("Expected"));
     }
@@ -97,7 +103,7 @@ servers:
   - host: "127.0.0.1"
     client_max_body_size: "not a number"
 "#;
-        let err = AppConfig::from_str(yaml).unwrap_err();
+        let err = err_to_str((AppConfig::from_str(yaml).unwrap_err()).into());
         println!("{}", err);
         assert!(err.contains("invalid digit found in string"));
     }
@@ -109,7 +115,7 @@ servers:
   - host: "127.0.0.1"
     ports: [8080, "bad_port"]
 "#;
-        let err = AppConfig::from_str(yaml).unwrap_err();
+        let err = err_to_str((AppConfig::from_str(yaml).unwrap_err()).into());
         println!("{}", err);
         assert!(err.contains("invalid digit found in string"));
     }
@@ -136,85 +142,83 @@ servers:
         assert_eq!(config.servers[0].server_name, "web1");
         assert_eq!(config.servers[1].ports, vec![9090]);
     }
-}
 
-#[test]
-fn test_default_values() {
-    let yaml_str = "server_name: test_default";
-    let config = ServerConfig::from_str(yaml_str).unwrap();
+    #[test]
+    fn test_default_values() {
+        let yaml_str = "server_name: test_default";
+        let config = ServerConfig::from_str(yaml_str).unwrap();
 
-    assert_eq!(config.host, "127.0.0.1");
-    assert_eq!(config.ports, vec![8080]);
-    assert_eq!(config.routes.len(), 0);
-}
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.ports, vec![8080]);
+        assert_eq!(config.routes.len(), 0);
+    }
 
-#[test]
-fn test_unknown_field_handling() {
-    let yaml_str = "
+    #[test]
+    fn test_unknown_field_handling() {
+        let yaml_str = "
         host: 127.0.0.1
         fake_setting: 123
     ";
-    let config = ServerConfig::from_str(yaml_str);
-    assert!(config.is_ok());
-}
+        let config = ServerConfig::from_str(yaml_str);
+        assert!(config.is_ok());
+    }
 
-#[test]
-fn test_error_pages_default() {
-    let yaml_str = "host: 127.0.0.1";
-    let config = ServerConfig::from_str(yaml_str).unwrap();
-    assert!(config.error_pages.is_empty());
-}
+    #[test]
+    fn test_error_pages_default() {
+        let yaml_str = "host: 127.0.0.1";
+        let config = ServerConfig::from_str(yaml_str).unwrap();
+        assert!(config.error_pages.is_empty());
+    }
 
-#[test]
-fn test_invalid_port_type() {
-    let yaml_str = "ports: [80, 'abc']";
-    let result = ServerConfig::from_str(yaml_str);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .contains("invalid digit found in string")
-    );
-}
+    #[test]
+    fn test_invalid_port_type() {
+        let yaml_str = "ports: [80, 'abc']";
+        let result = ServerConfig::from_str(yaml_str);
+        assert!(result.is_err());
+        let err = err_to_str((result.unwrap_err()).into());
+        assert!(
+            err.contains("invalid digit found in string")
+        );
+    }
 
-#[test]
-fn test_invalid_client_max_body_size_type() {
-    let yaml_str = "client_max_body_size: abc";
-    let result = ServerConfig::from_str(yaml_str);
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .contains("invalid digit found in string")
-    );
-}
+    #[test]
+    fn test_invalid_client_max_body_size_type() {
+        let yaml_str = "client_max_body_size: abc";
+        let result = ServerConfig::from_str(yaml_str);
+        assert!(result.is_err());
+        let err = err_to_str((result.unwrap_err()).into());
+        assert!(err.contains("invalid digit found in string"));
+    }
 
-#[test]
-fn test_missing_required_path_in_route() {
-    let yaml_str = "
+    #[test]
+    fn test_missing_required_path_in_route() {
+        let yaml_str = "
         routes:
           - root: /tmp
     ";
-    let result = ServerConfig::from_str(yaml_str);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Missing required field: path"));
-}
+        let result = ServerConfig::from_str(yaml_str);
+        assert!(result.is_err());
+        let err = err_to_str((result.unwrap_err()).into());
+        assert!(err.contains("Missing required field: path"));
+    }
 
-#[test]
-fn test_invalid_autoindex_type_in_route() {
-    let yaml_str = "
+    #[test]
+    fn test_invalid_autoindex_type_in_route() {
+        let yaml_str = "
         routes:
           - path: /
             autoindex: yes
     ";
-    let result = ServerConfig::from_str(yaml_str);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Invalid boolean"));
-}
+        let result = ServerConfig::from_str(yaml_str);
+        assert!(result.is_err());
+        let err = err_to_str((result.unwrap_err()).into());
+        assert!(err.contains("Invalid boolean"));
+    }
 
-#[test]
-fn test_bad_syntax() {
-    let yaml_str = "host: : 127.0.0.1";
-    let result = ServerConfig::from_str(yaml_str);
-    assert!(result.is_err());
+    #[test]
+    fn test_bad_syntax() {
+        let yaml_str = "host: : 127.0.0.1";
+        let result = ServerConfig::from_str(yaml_str);
+        assert!(result.is_err());
+    }
 }

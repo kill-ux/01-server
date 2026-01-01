@@ -7,7 +7,7 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use tracing::info;
+use proxy_log::info;
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;

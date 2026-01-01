@@ -1,5 +1,43 @@
 servers:
-  - server_name: "LocalServer"
-    zzzzz: kk kk kk
-    ports: 
-      - 2222  6666
+  - host: "127.0.0.1"
+    ports: [8087]
+    server_name: "localhost"
+    default_server: true
+    client_max_body_size: 1048576  # 1MB
+    routes:
+      - path: "/"
+        methods: ["GET", "POST"]
+        root: "./www/html"
+        default_file: "index.html"
+        autoindex: false
+      - path: "/api"
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        root: "./api"
+        default_file: "api.html"
+        autoindex: true
+        redirection: "https://api.example.com"
+        cgi_ext: ".cgi"
+      - path: "/upload"
+        methods: ["POST","GET"]
+        root: "./uploads"
+        default_file: ""
+        autoindex: false
+
+  - host: "127.0.0.2"
+    ports: [8082]
+    server_name: "webserver.local"
+    default_server: false
+    error_pages:
+      403: "/forbidden.html"
+      405: "/forbidden.html"
+    client_max_body_size: 524288  # 512KB
+    routes:
+      - path: "/static"
+        methods: ["GET"]
+        root: "./static"
+        default_file: "index.html"
+        autoindex: true
+  - host: "127.0.0.3"
+    ports: [4444, 2222]
+    server_name: "proxy.local"
+    default_server: false

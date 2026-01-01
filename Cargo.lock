@@ -38,18 +38,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy_log"
+version = "0.1.0"
+
+[[package]]
 name = "server_proxy"
 version = "0.1.0"
 dependencies = [
  "mio",
  "parser",
  "parser_derive",
- "tracing",
+ "proxy_log",
 ]
-
-[[package]]
-name = "tracing"
-version = "0.1.0"
 
 [[package]]
 name = "wasi"

@@ -1,6 +1,6 @@
 pub mod from_yaml;
 pub use from_yaml::*;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Debug};
 
 use crate::lexer::{LexerError, Token, Tokenizer};
 
@@ -28,6 +28,56 @@ impl<'a> YamlValue<'a> {
         } else {
             None
         }
+    }
+}
+
+use std::fmt;
+
+// #[derive(Debug)]
+pub enum YamlError {
+    Lexer(LexerError),
+    UnexpectedToken { expected: String, found: String },
+    Indentation { expected: usize, found: usize },
+    DuplicateKey(String),
+    ForbiddenBlock(String),
+    Generic(String),
+}
+
+impl std::error::Error for YamlError {}
+
+impl fmt::Display for YamlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            YamlError::Lexer(e) => write!(f, "Lexer error: {:?}", e),
+            YamlError::UnexpectedToken { expected, found } => {
+                write!(f, "Syntax Error: Expected {}, found {}", expected, found)
+            }
+            YamlError::Indentation { expected, found } => {
+                write!(
+                    f,
+                    "Indentation Error: Expected column {}, found {}",
+                    expected, found
+                )
+            }
+            YamlError::DuplicateKey(k) => write!(f, "Duplicate key found: '{}'", k),
+            YamlError::ForbiddenBlock(k) => {
+                write!(f, "Forbidden block value on same line as key: '{}'", k)
+            }
+            YamlError::Generic(s) => write!(f, "Error: {}", s),
+        }
+    }
+}
+
+impl Debug for YamlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "4444{}", self)
+    }
+}
+
+// Allow automatic conversion from LexerError to YamlError
+impl From<LexerError> for YamlError {
+    fn from(err: LexerError) -> Self {
+        YamlError::Lexer(err)
     }
 }
 
@@ -61,34 +111,34 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    pub fn parse(&mut self) -> Result<YamlValue<'a>, String> {
-        self.skip_junk().map_err(|e| format!("{:?}", e))?;
+    pub fn parse(&mut self) -> Result<YamlValue<'a>, YamlError> {
+        self.skip_junk()?;
 
         // If the file starts with an Indent, consume it before parsing the first value
         if let Token::Indent(n) = self.lookahead {
             let start_indent = n;
-            self.advance().map_err(|e| format!("{:?}", e))?;
+            self.advance()?;
             self.parse_value(start_indent)
         } else {
             self.parse_value(0)
         }
     }
 
-    pub fn parse_value(&mut self, current_indent: usize) -> Result<YamlValue<'a>, String> {
+    pub fn parse_value(&mut self, current_indent: usize) -> Result<YamlValue<'a>, YamlError> {
         // 1. Skip junk (NewLines)
-        self.skip_junk().map_err(|e| format!("{:?}", e))?;
+        self.skip_junk()?;
 
         match &self.lookahead {
             Token::Indent(n) => {
                 let n_val = *n;
                 // If the indent is deeper than our current scope, it's a new block (Map/List)
                 if n_val > current_indent {
-                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    self.advance()?;
                     match &self.lookahead {
                         Token::Dash => return self.parse_list(n_val, current_indent),
                         Token::Identifier(s) => {
                             let key = *s;
-                            self.advance().map_err(|e| format!("{:?}", e))?;
+                            self.advance()?;
                             return self.parse_map(key, n_val);
                         }
                         _ => return self.parse_value(n_val),
@@ -106,7 +156,7 @@ impl<'a> Parser<'a> {
 
             Token::Identifier(s) => {
                 let val = *s;
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
                 if matches!(self.lookahead, Token::Colon) {
                     // If it's a key: value pair, start a map
                     self.parse_map(val, current_indent)
@@ -116,17 +166,20 @@ impl<'a> Parser<'a> {
                     while let Token::Identifier(next_part) = self.lookahead {
                         full_scalar.push(' ');
                         full_scalar.push_str(next_part);
-                        self.advance().map_err(|e| format!("{:?}", e))?;
+                        self.advance()?;
                     }
                     Ok(YamlValue::Scalar(Box::leak(full_scalar.into_boxed_str())))
                 }
             }
             Token::Scalar(s) => {
                 let val = *s;
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
                 Ok(YamlValue::Scalar(val))
             }
-            _ => Err(format!("Expected value, found {:?}", self.lookahead)),
+            _ => Err(YamlError::UnexpectedToken {
+                expected: "value".to_string(),
+                found: format!("{:?}", self.lookahead),
+            }),
         }
     }
 
@@ -134,41 +187,41 @@ impl<'a> Parser<'a> {
         &mut self,
         list_indent: usize,
         parent_indent: usize,
-    ) -> Result<YamlValue<'a>, String> {
+    ) -> Result<YamlValue<'a>, YamlError> {
         let mut items = Vec::new();
 
         loop {
             if !matches!(self.lookahead, Token::Dash) {
                 break;
             }
-            self.advance().map_err(|e| format!("{:?}", e))?; // Consume '-'
+            self.advance()?; // Consume '-'
             // Parse the value of the list item
             items.push(self.parse_value(list_indent + 2)?);
             // Peek for next item
-            self.skip_junk().map_err(|e| format!("{:?}", e))?;
+            self.skip_junk()?;
 
             if let Token::Indent(n) = self.lookahead {
                 let n_val = n;
 
                 if n_val == list_indent {
                     // Perfect alignment!
-                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    self.advance()?;
                     if matches!(self.lookahead, Token::Dash) {
                         continue;
                     } else {
-                        return Err(format!(
-                            "Expected '-' for list item, found {:?}",
-                            self.lookahead
-                        ));
+                        return Err(YamlError::UnexpectedToken {
+                            expected: "-".to_string(),
+                            found: format!("{:?}", self.lookahead),
+                        });
                     }
                 } else if n_val <= parent_indent {
                     // This is a dedent, the list has ended.
                     break;
                 } else {
-                    return Err(format!(
-                        "Indentation Error: Sequence items must start at the same column (expected {}, found {})",
-                        list_indent, n_val
-                    ));
+                    return Err(YamlError::Indentation {
+                        expected: list_indent,
+                        found: n,
+                    });
                 }
             } else if !matches!(self.lookahead, Token::Dash) {
                 break;
@@ -177,55 +230,66 @@ impl<'a> Parser<'a> {
         Ok(YamlValue::List(items))
     }
 
-    pub fn parse_brace_map(&mut self) -> Result<YamlValue<'a>, String> {
-        self.advance().map_err(|e| format!("{:?}", e))?;
+    pub fn parse_brace_map(&mut self) -> Result<YamlValue<'a>, YamlError> {
+        self.advance()?;
         let mut map = BTreeMap::new();
         while !matches!(self.lookahead, Token::CloseBrace) && !matches!(self.lookahead, Token::Eof)
         {
             if matches!(self.lookahead, Token::Indent(_))
                 || matches!(self.lookahead, Token::NewLine)
             {
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
                 continue;
             }
 
             let key = match self.lookahead {
                 Token::Identifier(s) => {
                     let key = s;
-                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    self.advance()?;
                     key
                 }
-                _ => return Err("Expected identifier".into()),
+                _ => {
+                    return Err(YamlError::UnexpectedToken {
+                        expected: "identifier".to_string(),
+                        found: format!("{:?}", self.lookahead),
+                    });
+                }
             };
 
             if !matches!(self.lookahead, Token::Colon) {
-                return Err("Expected colon".into());
+                return Err(YamlError::UnexpectedToken {
+                    expected: ":".to_string(),
+                    found: format!("{:?}", self.lookahead),
+                });
             }
-            self.advance().map_err(|e| format!("{:?}", e))?;
+            self.advance()?;
 
             let value = self.parse_value(0)?;
             map.insert(key, value);
 
             if matches!(self.lookahead, Token::Comma) {
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
                 while matches!(self.lookahead, Token::Indent(_))
                     || matches!(self.lookahead, Token::NewLine)
                 {
-                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    self.advance()?;
                 }
             }
         }
 
         if !matches!(self.lookahead, Token::CloseBrace) {
-            return Err("Expected closing brace '}'".into());
+            return Err(YamlError::UnexpectedToken {
+                expected: "}".to_string(),
+                found: format!("{:?}", self.lookahead),
+            });
         }
 
-        self.advance().map_err(|e| format!("{:?}", e))?;
+        self.advance()?;
         Ok(YamlValue::Map(map))
     }
 
-    fn parse_bracket_list(&mut self) -> Result<YamlValue<'a>, String> {
-        self.advance().map_err(|e| format!("{:?}", e))?;
+    fn parse_bracket_list(&mut self) -> Result<YamlValue<'a>, YamlError> {
+        self.advance()?;
 
         let mut items = Vec::new();
         while !matches!(self.lookahead, Token::CloseBracket)
@@ -234,28 +298,31 @@ impl<'a> Parser<'a> {
             if matches!(self.lookahead, Token::Indent(_))
                 || matches!(self.lookahead, Token::NewLine)
             {
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
                 continue;
             }
 
             items.push(self.parse_value(0)?);
 
             if matches!(self.lookahead, Token::Comma) {
-                self.advance().map_err(|e| format!("{:?}", e))?;
+                self.advance()?;
 
                 while matches!(self.lookahead, Token::Indent(_))
                     || matches!(self.lookahead, Token::NewLine)
                 {
-                    self.advance().map_err(|e| format!("{:?}", e))?;
+                    self.advance()?;
                 }
             }
         }
 
         if !matches!(self.lookahead, Token::CloseBracket) {
-            return Err("Expected closing bracket ']'".into());
+            return Err(YamlError::UnexpectedToken {
+                expected: "]".to_string(),
+                found: format!("{:?}", self.lookahead),
+            });
         }
 
-        self.advance().map_err(|e| format!("{:?}", e))?;
+        self.advance()?;
         Ok(YamlValue::List(items))
     }
 
@@ -263,61 +330,61 @@ impl<'a> Parser<'a> {
         &mut self,
         first_key: &'a str,
         map_indent: usize, // The indent level of the keys in this map
-    ) -> Result<YamlValue<'a>, String> {
+    ) -> Result<YamlValue<'a>, YamlError> {
         let mut map = BTreeMap::new();
         let mut current_key = first_key;
 
         loop {
             // 1. Expect Colon after the key
             if !matches!(self.lookahead, Token::Colon) {
-                return Err(format!(
-                    "Expected ':' after '{}', found {:?}",
-                    current_key, self.lookahead
-                ));
+                return Err(YamlError::UnexpectedToken {
+                    expected: ":".to_string(),
+                    found: format!("{:?}", self.lookahead),
+                });
             }
-            self.advance().map_err(|e| format!("{:?}", e))?; // Consume ':'
+            self.advance()?; // Consume ':'
 
             if matches!(self.lookahead, Token::Dash) {
-                return Err(format!(
-                    "It is forbidden to specify block composed value at the same line as key: '{}'",
-                    current_key
-                ));
+                return Err(YamlError::UnexpectedToken {
+                    expected: "-".to_string(),
+                    found: format!("{:?}", self.lookahead),
+                });
             }
 
-            self.skip_junk().map_err(|e| format!("{:?}", e))?;
+            self.skip_junk()?;
 
             let value = self.parse_value(map_indent)?;
 
             if !map.insert(current_key, value).is_none() {
-                return Err(format!("Duplicate key found: {}", current_key));
+                return Err(YamlError::DuplicateKey(current_key.to_string()));
             }
 
             // 3. Look for the next sibling key
-            self.skip_junk().map_err(|e| format!("{:?}", e))?;
+            self.skip_junk()?;
 
             if let Token::Indent(n) = self.lookahead {
                 if n == map_indent {
                     // Perfect alignment!
-                    self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Indent
+                    self.advance()?; // Consume the Indent
 
                     match self.lookahead {
                         Token::Identifier(s) => {
                             current_key = s;
-                            self.advance().map_err(|e| format!("{:?}", e))?; // Consume the Key
+                            self.advance()?; // Consume the Key
                             continue;
                         }
                         _ => {
-                            return Err(format!(
-                                "Expected identifier for map key, found {:?}",
-                                self.lookahead
-                            ));
+                            return Err(YamlError::UnexpectedToken {
+                                expected: "identifier".to_string(),
+                                found: format!("{:?}", self.lookahead),
+                            });
                         }
                     }
                 } else if n > map_indent {
-                    return Err(format!(
-                        "Indentation Error: Map keys must align at the same column (expected {}, found {})",
-                        map_indent, n
-                    ));
+                    return Err(YamlError::UnexpectedToken {
+                        expected: "indentation".to_string(),
+                        found: format!("indentation level {}", n),
+                    });
                 } else {
                     // Dedent or end of map
                     break;

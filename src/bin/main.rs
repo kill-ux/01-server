@@ -6,17 +6,10 @@ use server_proxy::{
     http::{HttpRequest, HttpResponse},
     server::Server,
 };
-use tracing::errors;
 
 fn main() -> Result<()> {
     let content = std::fs::read_to_string("config.yaml")?;
-     let config =  match AppConfig::from_str(&content) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            errors!("Failed to load configuration: {}", e);
-            return Ok(()) ;
-        }
-    };
+    let config = AppConfig::from_str(&content)?;
 
     let poll = Poll::new()?;
 
