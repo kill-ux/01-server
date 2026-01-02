@@ -10,8 +10,8 @@ use crate::{
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
-    /// "host/path" -> RouteConfig (defaults/catch-alls only)
-    routes: HashMap<String, Arc<ServerConfig>>,
+    // Key: "port|host|path" -> RouteConfig
+    pub routes: HashMap<String, Arc<RouteConfig>>,
 }
 
 impl Default for Router {
@@ -36,59 +36,48 @@ impl Router {
             .set_body(b"405 - Method Not Allowed".to_vec(), "text/plain")
     }
 
-    pub fn add_route_config(&mut self, host_key: &str, path: &str, server_cfg: Arc<ServerConfig>) {
-        let key = format!("{}{}", host_key, path);
-        self.routes.insert(key, server_cfg);
-    }
-
-    pub fn find_route(&self, host: &str, path: &str) -> Option<&Arc<ServerConfig>> {
-        let key = format!("{}{}", host, path);
-        self.routes.get(&key)
+    pub fn add_route_config(&mut self, port: u16, host: &str, path: &str, r_cfg: Arc<RouteConfig>) {
+        // Use a consistent delimiter like '|' to avoid path collisions
+        let key = format!("{}|{}|{}", port, host, path);
+        self.routes.insert(key, r_cfg);
     }
 
     pub fn resolve(
         &self,
-        method: &Method,
+        port: u16,
         host: &str,
         path: &str,
+        method: &Method,
     ) -> Result<Arc<RouteConfig>, RoutingError> {
-        // Try exact match first
-        let key = format!("{}|{}", host, path);
-        if let Some(r_cfg) = self.routes.get(key.as_str()) {
-            return if method.is_allowed(&r_cfg.methods) {
-                Ok(Arc::clone(r_cfg))
-            } else {
-                Err(RoutingError::MethodNotAllowed)
-            };
-        }
+        // Try specific host first, then fallback to catch-all "_"
+        let hosts_to_try = [host, "_"];
 
-        // Fallback to prefix matching
-        let mut best_match: Option<(&String, &Arc<RouteConfig>)> = None;
-        for (path_prefix, r_cfg) in &self.routes {
-            if path_prefix.starts_with(&format!("{}|", host)) {
-                let prefix_path = &path_prefix[host.len() + 1..]; // Skip "host|"
-                if path.starts_with(prefix_path) {
-                    if let Some((prev_path, _)) = best_match {
-                        if prev_path.len() < prefix_path.len() {
-                            best_match = Some((path_prefix, r_cfg));
+        for h in hosts_to_try {
+            let mut best_match: Option<(&String, &Arc<RouteConfig>)> = None;
+            let prefix_start = format!("{}|{}|", port, h);
+
+            for (key, r_cfg) in &self.routes {
+                if key.starts_with(&prefix_start) {
+                    let route_path = &key[prefix_start.len()..];
+                    if path.starts_with(route_path) {
+                        // Longest Prefix Match
+                        if best_match.is_none() || route_path.len() > best_match.unwrap().0.len() {
+                            best_match = Some((key, r_cfg));
                         }
-                    } else {
-                        best_match = Some((path_prefix, r_cfg));
                     }
                 }
             }
-        }
 
-        let (_, r_cfg) = best_match.ok_or(RoutingError::NotFound)?;
-
-        if method.is_allowed(&r_cfg.methods) {
-            Ok(Arc::clone(r_cfg))
-        } else {
-            Err(RoutingError::MethodNotAllowed)
+            if let Some((_, r_cfg)) = best_match {
+                if method.is_allowed(&r_cfg.methods) {
+                    return Ok(Arc::clone(r_cfg));
+                } else {
+                    return Err(RoutingError::MethodNotAllowed);
+                }
+            }
         }
+        Err(RoutingError::NotFound)
     }
-
-    
 }
 
 #[derive(Debug)]
