@@ -1,5 +1,5 @@
-use crate::config::{AppConfig, RouteConfig};
-use crate::error::Result;
+use crate::config::{AppConfig, RouteConfig, ServerConfig};
+use crate::error::{CleanError, Result};
 use crate::http::*;
 use crate::router::{Router, RoutingError};
 use mio::{
@@ -7,7 +7,7 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use proxy_log::info;
+use proxy_log::{info, warn};
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
@@ -72,83 +72,57 @@ pub struct Server {
     pub connections: HashMap<Token, HttpConnection>,
     pub router: Router,
     pub config: AppConfig,
-    pub listener_to_config: HashMap<Token, usize>,
+    pub listener_to_servers: HashMap<Token, Vec<usize>>,
     next_token: usize,
 }
 
 impl Server {
     pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
         let mut listeners = HashMap::new();
-        let mut listener_to_config = HashMap::new();
-        let mut bound_ports = std::collections::HashSet::new();
+        let mut listener_to_servers = HashMap::new(); // Token -> Vec<usize> server_idxs
+        let mut bound_ports = HashSet::new();
+        let mut bound_addrs = HashSet::new();
         let mut next_token = 0;
         let mut router = Router::new();
 
-        let mut default_check = HashSet::new();
-        let mut name_port_check = HashSet::new();
+        info!("Initializing server listeners and routing tables...");
 
-        info!("Setting up server listeners...");
+        // Track unique bind addrs and multi-servers per addr
+        let mut addr_to_servers: HashMap<SocketAddr, Vec<usize>> = HashMap::new();
+        for (s_idx, s_cfg) in config.servers.iter().enumerate() {
+            for &port in &s_cfg.ports {
+                let addr: SocketAddr = format!("{}:{}", s_cfg.host_header(), port).parse()?;
+                addr_to_servers.entry(addr).or_default().push(s_idx);
+            }
+        }
 
-        for (config_idx, s_cfg) in config.servers.iter().enumerate() {
-            // 1. Fill Router first
-            for r_cfg in &s_cfg.routes {
-                let shared_cfg = Arc::new(r_cfg.clone());
-
-                if !s_cfg.server_name.is_empty() {
-                    router.add_route_config(
-                        &s_cfg.server_name,
-                        &r_cfg.path,
-                        Arc::clone(&shared_cfg),
-                    );
-                }
-
-                if s_cfg.default_server || s_cfg.server_name.is_empty() {
-                    router.add_route_config(&s_cfg.host, &r_cfg.path, Arc::clone(&shared_cfg));
-                }
+        for (addr, server_idxs) in addr_to_servers {
+            let addr_str = addr.to_string();
+            if !bound_addrs.insert(addr_str.clone()) {
+                warn!("Skipping duplicate bind: {}", addr);
+                continue;
             }
 
-            for &port in &s_cfg.ports {
-                let name = if s_cfg.server_name.is_empty() {
-                    "_"
-                } else {
-                    &s_cfg.server_name
-                };
+            let mut listener = TcpListener::bind(addr)?;
+            let token = Token(next_token);
 
-                let identifier = format!("{}:{}", name, port);
+            poll.registry()
+                .register(&mut listener, token, Interest::READABLE)?;
 
-                if !name_port_check.insert(identifier.clone()) {
-                    return Err(format!(
-                        "Conflict: server_name '{}' is already defined on port {}",
-                        name, port
-                    )
-                    .into());
+            listeners.insert(token, listener);
+            listener_to_servers.insert(token, server_idxs); // Multi-server support
+            next_token += 1;
+            info!("Bound listener: {} -> servers {:?}", addr, server_idxs);
+        }
+
+        // Populate router ONLY for defaults/catch-alls (host/path, no port)
+        for (s_idx, s_cfg) in config.servers.iter().enumerate() {
+            let shared_cfg = Arc::new(s_cfg.clone());
+            if s_cfg.default_server {
+                for r_cfg in &s_cfg.routes {
+                    let key = format!("{}/{}", s_cfg.host_header(), r_cfg.path);
+                    router.add_route_config(&key, &r_cfg.path, Arc::clone(&shared_cfg));
                 }
-
-                let addr_str = format!("{}:{}", s_cfg.host, port);
-
-                // Check: Is there already a default server for this specific IP:Port?
-                if s_cfg.default_server {
-                    if !default_check.insert(addr_str.clone()) {
-                        return Err(
-                            format!("Multiple default servers defined for {}", addr_str).into()
-                        );
-                    }
-                }
-
-                if !bound_ports.insert(addr_str.clone()) {
-                    continue;
-                }
-
-                let addr: SocketAddr = addr_str.parse()?;
-                let mut listener = TcpListener::bind(addr)?;
-                let token = Token(next_token);
-
-                poll.registry()
-                    .register(&mut listener, token, Interest::READABLE)?;
-
-                listeners.insert(token, listener);
-                listener_to_config.insert(token, config_idx);
-                next_token += 1;
             }
         }
 
@@ -156,7 +130,7 @@ impl Server {
             listeners,
             connections: HashMap::new(),
             router,
-            listener_to_config,
+            listener_to_servers,
             config,
             next_token: next_token + 1,
         })
@@ -274,8 +248,8 @@ impl Server {
                 let host = request
                     .headers
                     .get("Host")
-                    .map(|h| h.split(":").next().unwrap_or(h))
-                    .unwrap_or("default");
+                    .and_then(|h| h.split(':').next())
+                    .ok_or_else(|| CleanError::from("Missing Host header"))?;
 
                 dbg!(host);
 
@@ -330,5 +304,69 @@ impl Server {
 
     pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
         HttpResponse::new(200, "OK").set_body(_r_cfg.path.as_bytes().to_vec(), "text/plain")
+    }
+
+    pub fn catch_all(
+        &self,
+        listener_token: Token,
+        method: &Method,
+        host: Option<&str>,
+        path: &str,
+    ) -> core::result::Result<Arc<ServerConfig>, RoutingError> {
+        // 1. Listener token → server candidates
+        if let Some(server_idxs) = self.listener_to_servers.get(&listener_token) {
+            // Exact server_name match
+            if let Some(host) = host {
+                for &s_idx in server_idxs {
+                    let s_cfg = &self.config.servers[s_idx];
+                    if s_cfg.server_name == host {
+                        // Check routes within this server
+                        if let Some(r_cfg) =
+                            s_cfg.routes.iter().find(|r| r.path_matches(path, method))
+                        {
+                            return Ok(Arc::clone(&self.server_cfgs[s_idx]));
+                        }
+                    }
+                }
+            }
+            // Fallback: first server's routes
+            if let Some(&s_idx) = server_idxs.first() {
+                let s_cfg = &self.config.servers[s_idx];
+                if let Some(r_cfg) = s_cfg.routes.iter().find(|r| r.path_matches(path, method)) {
+                    return Ok(Arc::clone(&self.server_cfgs[s_idx]));
+                }
+            }
+        }
+
+        // 2. Global router fallback (defaults)
+        if let Some(host) = host {
+            let key = format!("{}{}", host, path);
+            if let Some(server_cfg) = self.routes.get(&key) {
+                if method.is_allowed(&server_cfg.routes[0].methods) {
+                    // Assume first route
+                    return Ok(Arc::clone(server_cfg));
+                }
+            }
+        }
+
+        // Prefix fallback in global router
+        let mut best_match: Option<&Arc<ServerConfig>> = None;
+        for (prefix_key, server_cfg) in &self.routes {
+            if prefix_key.starts_with(host.unwrap_or(""))
+                && path.starts_with(&prefix_key[host.len_or_0()..])
+            {
+                if let Some(prev) = best_match {
+                    if prefix_key.len() > prev_key(server_cfg).len() {
+                        best_match = Some(server_cfg);
+                    }
+                } else {
+                    best_match = Some(server_cfg);
+                }
+            }
+        }
+
+        best_match
+            .ok_or(RoutingError::NotFound)
+            .map(|cfg| Arc::clone(cfg))
     }
 }

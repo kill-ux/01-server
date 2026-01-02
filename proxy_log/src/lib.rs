@@ -19,7 +19,7 @@ macro_rules! log {
     ($level:expr, $color:expr, $($arg:tt)*) => {
         let ts = $crate::format_time(std::time::SystemTime::now());
         println!(
-            "[{}] \x1b[{}m{}\x1b[0m: {}",
+            "[{}] \x1b[30m #|| web-server ||# \x1b[0 \x1b[{}m{}\x1b[0m: {}",
             ts,
             $color,
             $level,
@@ -30,9 +30,9 @@ macro_rules! log {
 
 
 #[macro_export]
-macro_rules! info { ($($arg:tt)*) => { $crate::log!("INFO", "32", $($arg)*); }; } // Green
+macro_rules! info { ($($arg:tt)*) => { $crate::log!("INFO ", "32", $($arg)*); }; } // Green
 #[macro_export]
-macro_rules! warn { ($($arg:tt)*) => { $crate::log!("WARN", "33", $($arg)*); }; } // Yellow
+macro_rules! warn { ($($arg:tt)*) => { $crate::log!("WARN ", "33", $($arg)*); }; } // Yellow
 #[macro_export]
 macro_rules! errors { ($($arg:tt)*) => { $crate::log!("ERROR", "31", $($arg)*); }; } // Red
 #[macro_export]

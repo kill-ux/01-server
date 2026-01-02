@@ -1,3 +1,5 @@
+
+
 use crate::{YamlError, YamlValue};
 
 pub trait FromYaml: Sized {
@@ -27,7 +29,14 @@ impl FromYaml for String {
 }
 
 
-
+// impl FromYaml for IpAddr {
+//     fn from_yaml(value: &YamlValue) -> std::result::Result<Self, YamlError> {
+//         match value {
+//             YamlValue::Scalar(s) => s.parse().map_err(YamlError::Generic(|ep| format!("{ep}"))),
+//             _ => {},
+//         }
+//     }
+// }
 
 
 impl FromYaml for bool {

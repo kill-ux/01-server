@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
 };
 
 use parser_derive::YamlStruct;
@@ -13,15 +13,15 @@ pub const DEFAULT_CLIENT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 #[derive(Debug, Clone, YamlStruct)]
 pub struct RouteConfig {
     pub path: String,
-    #[field(default = "[GET]")]
+    #[parcast(default = "[GET]")]
     pub methods: Vec<String>,
     pub redirection: Option<String>,
-    #[field(default = "./www")]
+    #[parcast(default = "./www")]
     pub root: String,
-    #[field(default = "index.html")]
+    #[parcast(default = "index.html")]
     pub default_file: String,
     pub cgi_ext: Option<String>,
-    #[field(default = "false")]
+    #[parcast(default = "false")]
     pub autoindex: bool,
 }
 
@@ -41,20 +41,46 @@ impl Default for RouteConfig {
 
 #[derive(Debug, Clone, YamlStruct)]
 pub struct ServerConfig {
-    #[field(default = "127.0.0.1")]
+    #[parcast(default = "127.0.0.1", rename = "host")]
+    pub host_str: String,
+    #[parcast(skip)]
     pub host: IpAddr,
-    #[field(default = "[8080]")]
+    #[parcast(default = "[8080]")]
     pub ports: Vec<u16>,
-    #[field(default = "_")]
+    #[parcast(default = "_")]
     pub server_name: String,
-    #[field(default = "{}")]
+    #[parcast(default = "{}")]
     pub error_pages: HashMap<u16, String>,
-    #[field(default = "1048576")]
+    #[parcast(default = "1048576")]
     pub client_max_body_size: usize,
-    #[field(default = "[]")]
+    #[parcast(default = "[]")]
     pub routes: Vec<RouteConfig>,
-    #[field(default = "false")]
+    #[parcast(default = "false")]
     pub default_server: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            host_str: "127.0.0.1".to_string(),
+            ports: vec![8080],
+            server_name: "_".to_string(),
+            error_pages: HashMap::new(),
+            client_max_body_size: 1048576,
+            routes: Vec::new(),
+            default_server: false,
+        }
+    }
+}
+
+impl ServerConfig {
+    pub fn host_header(&self) -> String {
+        match self.host {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        }
+    }
 }
 
 #[derive(Debug, Default, YamlStruct)]
@@ -74,19 +100,28 @@ impl AppConfig {
             let mut local_ports = HashSet::new();
 
             // 1. IP Validation
-            if validate_host(&mut s_cfg.host).is_err() {
+            if sync_host_fields(&mut s_cfg).is_err() {
                 errors!("Invalid IP address format: {}", s_cfg.host);
                 is_valid = false;
             }
 
             // 2. Default Server uniqueness per port
             for &port in &s_cfg.ports {
+                if port == 0 {
+                    errors!(
+                        "Server '{}' requested port 0. Static port assignment is required.",
+                        s_cfg.server_name
+                    );
+                    is_valid = false;
+                    break;
+                }
+
                 if !local_ports.insert(port) {
                     warn!("Server {} has duplicated ports.", s_cfg.server_name);
                     is_valid = false;
                     break;
                 }
-                
+
                 if s_cfg.default_server {
                     if let Some(existing_name) =
                         default_servers_per_port.insert(port, s_cfg.server_name.clone())
@@ -286,7 +321,8 @@ impl AppConfig {
     }
 }
 
-pub fn validate_host(host_str: &mut String) -> Result<(), CleanError> {
+pub fn sync_host_fields(config: &mut ServerConfig) -> Result<(), CleanError> {
+    let host_str = &mut config.host_str;
 
     let inner = if host_str.starts_with('[') && host_str.ends_with(']') {
         &host_str[1..host_str.len() - 1]
@@ -294,13 +330,19 @@ pub fn validate_host(host_str: &mut String) -> Result<(), CleanError> {
         host_str.as_str()
     };
 
-
     let addr = inner
         .parse::<IpAddr>()
-        .map_err(|_| CleanError::from(format!("Invalid IP address format: '{}'", host_str)))?;
+        .map_err(|_| CleanError::from(format!("Invalid IP: {}", host_str)))?;
 
+    // Update the IpAddr field
+    config.host = addr;
+
+    // Standardize the String field for the host header
     if addr.is_ipv6() {
         *host_str = format!("[{}]", addr);
+    } else {
+        *host_str = addr.to_string();
     }
+
     Ok(())
 }

@@ -1,11 +1,13 @@
 use proc_macro::{Delimiter, TokenStream, TokenTree};
 
-#[proc_macro_derive(YamlStruct, attributes(field))]
+#[proc_macro_derive(YamlStruct, attributes(parcast))]
 pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
     let tokens: Vec<TokenTree> = input.into_iter().collect();
     let mut struct_name = String::new();
     let mut fields = Vec::new();
     let mut pending_default = None;
+    let mut rename = None;
+    let mut skip = false;
 
     // 1. Identify Struct Name and Fields
     for i in 0..tokens.len() {
@@ -30,21 +32,50 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                         let attr_tokens: Vec<TokenTree> = g.stream().into_iter().collect();
                         if attr_tokens.len() >= 2
                             && let TokenTree::Ident(ref attr_ident) = attr_tokens[0]
-                            && attr_ident.to_string() == "field"
+                            && attr_ident.to_string() == "parcast"
                             && let TokenTree::Group(ref attr_group) = attr_tokens[1]
                             && attr_group.delimiter() == Delimiter::Parenthesis
                         {
                             let attr_inner: Vec<TokenTree> =
                                 attr_group.stream().into_iter().collect();
                             for k in 0..attr_inner.len() {
-                                if let TokenTree::Ident(ref key_ident) = attr_inner[k]
-                                    && key_ident.to_string() == "default"
-                                    && let TokenTree::Punct(ref eq_punct) = attr_inner[k + 1]
-                                    && eq_punct.as_char() == '='
-                                    && let TokenTree::Literal(ref lit) = attr_inner[k + 2]
-                                {
-                                    pending_default = Some(lit.to_string());
+                                match attr_inner[k] {
+                                    TokenTree::Ident(ref key_ident)
+                                        if key_ident.to_string() == "default" =>
+                                    {
+                                        if let TokenTree::Punct(ref eq_punct) = attr_inner[k + 1]
+                                            && eq_punct.as_char() == '='
+                                            && let TokenTree::Literal(ref lit) = attr_inner[k + 2]
+                                        {
+                                            pending_default = Some(lit.to_string());
+                                        }
+                                    }
+                                    TokenTree::Ident(ref key_ident)
+                                        if key_ident.to_string() == "rename" =>
+                                    {
+                                        if let TokenTree::Punct(ref eq_punct) = attr_inner[k + 1]
+                                            && eq_punct.as_char() == '='
+                                            && let TokenTree::Literal(ref lit) = attr_inner[k + 2]
+                                        {
+                                            rename = Some(lit.to_string())
+                                        }
+                                    }
+                                    TokenTree::Ident(ref key_ident)
+                                        if key_ident.to_string() == "skip" =>
+                                    {
+                                        skip = true
+                                    }
+
+                                    _ => {}
                                 }
+                                // if let TokenTree::Ident(ref key_ident) = attr_inner[k]
+                                //     && key_ident.to_string() == "default"
+                                //     && let TokenTree::Punct(ref eq_punct) = attr_inner[k + 1]
+                                //     && eq_punct.as_char() == '='
+                                //     && let TokenTree::Literal(ref lit) = attr_inner[k + 2]
+                                // {
+                                //     pending_default = Some(lit.to_string());
+                                // }
                             }
                         }
                     }
@@ -56,7 +87,13 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                     && j > 0
                     && let TokenTree::Ident(ref field_ident) = inner[j - 1]
                 {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+
                     let field_name = field_ident.to_string();
+                    let yaml_key_name = rename.take().map(|s| s.trim_matches('"').to_string()).unwrap_or(field_name.clone());
 
                     if field_name != "pub" && field_name != "crate" {
                         // Look ahead to see if 'Option' appears before the next comma
@@ -74,7 +111,7 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                             k += 1;
                         }
 
-                        fields.push((field_name, is_option, pending_default.take()));
+                        fields.push((field_name, is_option, yaml_key_name , pending_default.take()));
                     }
                 }
             }
@@ -95,21 +132,21 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                     std::result::Result::Ok(Self {{",
         name = struct_name, fields = fields
             .iter()
-            .map(|(f, _, _)| format!("\"{}\"", f))
+            .map(|(_, _, f, _)| format!("\"{}\"", f))
             .collect::<Vec<String>>()
             .join(", ")
     );
 
-    for (field, is_option, default_value) in fields {
+    for (field, is_option,yaml_key, default_value) in fields {
         if is_option {
             generated.push_str(&format!(
-                "{field}: parser::FromYaml::from_yaml_opt(m.get(\"{field}\"), \"{field}\")?,",
+                "{field}: parser::FromYaml::from_yaml_opt(m.get(\"{yaml_key}\"), \"{field}\")?,",
                 field = field
             ));
         } else if let Some(def) = default_value {
             let clean_def = def.trim_matches('"');
             generated.push_str(&format!(
-                "{field}: match m.get(\"{field}\") {{
+                "{field}: match m.get(\"{yaml_key}\") {{
                             Some(v) => parser::FromYaml::from_yaml(v)?, 
                             None => {{
                                 // Reuse your actual Parser here!
@@ -124,12 +161,13 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
         } else {
             // Required field logic
             generated.push_str(&format!(
-            "{field}: parser::FromYaml::from_yaml(m.get(\"{field}\").ok_or_else(||  parser::YamlError::Generic(\"Missing required field: {field}\".into()))?)?,",
+            "{field}: parser::FromYaml::from_yaml(m.get(\"{yaml_key}\").ok_or_else(||  parser::YamlError::Generic(\"Missing required field: {field}\".into()))?)?,",
             field = field
         ));
         }
     }
 
+    generated.push_str("..std::default::Default::default() ");
     generated.push_str("}) } else { std::result::Result::Err(parser::YamlError::Generic(\"Expected a Map\".into())) } } }");
 
     generated.parse().expect("Generated code was invalid")

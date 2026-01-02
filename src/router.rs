@@ -1,12 +1,17 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{config::RouteConfig, http::*};
+use mio::Token;
+
+use crate::{
+    config::{RouteConfig, ServerConfig},
+    http::*,
+};
 
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
 pub struct Router {
-    // server_name|Path -> RouteConfig
-    routes: HashMap<String, Arc<RouteConfig>>,
+    /// "host/path" -> RouteConfig (defaults/catch-alls only)
+    routes: HashMap<String, Arc<ServerConfig>>,
 }
 
 impl Default for Router {
@@ -31,10 +36,14 @@ impl Router {
             .set_body(b"405 - Method Not Allowed".to_vec(), "text/plain")
     }
 
-    pub fn add_route_config(&mut self, host: &str, path: &str, r_cfg: Arc<RouteConfig>) {
-        self.routes
-            .entry(format!("{}|{}", host, path))
-            .or_insert(r_cfg);
+    pub fn add_route_config(&mut self, host_key: &str, path: &str, server_cfg: Arc<ServerConfig>) {
+        let key = format!("{}{}", host_key, path);
+        self.routes.insert(key, server_cfg);
+    }
+
+    pub fn find_route(&self, host: &str, path: &str) -> Option<&Arc<ServerConfig>> {
+        let key = format!("{}{}", host, path);
+        self.routes.get(&key)
     }
 
     pub fn resolve(
@@ -78,6 +87,8 @@ impl Router {
             Err(RoutingError::MethodNotAllowed)
         }
     }
+
+    
 }
 
 #[derive(Debug)]
