@@ -78,9 +78,6 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
-        dbg!("ss");
-        let ip6: SocketAddr = "[::1]:8080".parse()?;
-        dbg!("hh");
         let mut listeners = HashMap::new();
         let mut listener_to_config = HashMap::new();
         let mut bound_ports = std::collections::HashSet::new();

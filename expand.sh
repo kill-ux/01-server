@@ -1,0 +1,1 @@
+cargo expand --lib > expanded.rs

@@ -1,10 +1,4 @@
 servers:
-  - host: 127.0.0.1
+  - host: "::1"
     ports: [8080]
-    server_name: kk
-  - host: 127.0.0.1
-    ports: [4444]
-    server_name: kk
-  - host: 127.0.0.2
-    ports: [4444]
     server_name: kk

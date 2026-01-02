@@ -42,7 +42,7 @@ impl Default for RouteConfig {
 #[derive(Debug, Clone, YamlStruct)]
 pub struct ServerConfig {
     #[field(default = "127.0.0.1")]
-    pub host: String,
+    pub host: IpAddr,
     #[field(default = "[8080]")]
     pub ports: Vec<u16>,
     #[field(default = "_")]
@@ -69,12 +69,12 @@ impl AppConfig {
         let mut valid_servers = Vec::new();
 
         // Use drain to take ownership and rebuild the list
-        for s_cfg in self.servers.drain(..) {
+        for mut s_cfg in self.servers.drain(..) {
             let mut is_valid = true;
             let mut local_ports = HashSet::new();
 
             // 1. IP Validation
-            if validate_host(&s_cfg.host).is_err() {
+            if validate_host(&mut s_cfg.host).is_err() {
                 errors!("Invalid IP address format: {}", s_cfg.host);
                 is_valid = false;
             }
@@ -86,6 +86,7 @@ impl AppConfig {
                     is_valid = false;
                     break;
                 }
+                
                 if s_cfg.default_server {
                     if let Some(existing_name) =
                         default_servers_per_port.insert(port, s_cfg.server_name.clone())
@@ -285,14 +286,21 @@ impl AppConfig {
     }
 }
 
-pub fn validate_host(host_str: &str) -> Result<IpAddr, CleanError> {
-    let sanitized = if host_str.starts_with('[') && host_str.ends_with(']') {
+pub fn validate_host(host_str: &mut String) -> Result<(), CleanError> {
+
+    let inner = if host_str.starts_with('[') && host_str.ends_with(']') {
         &host_str[1..host_str.len() - 1]
     } else {
-        host_str
+        host_str.as_str()
     };
 
-    sanitized
+
+    let addr = inner
         .parse::<IpAddr>()
-        .map_err(|_| CleanError::from(format!("Invalid IP address format: '{}'", host_str)))
+        .map_err(|_| CleanError::from(format!("Invalid IP address format: '{}'", host_str)))?;
+
+    if addr.is_ipv6() {
+        *host_str = format!("[{}]", addr);
+    }
+    Ok(())
 }
