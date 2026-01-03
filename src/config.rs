@@ -9,6 +9,7 @@ use proxy_log::{errors, warn};
 use crate::{error::CleanError, http::Method, router::RoutingError};
 
 pub const DEFAULT_CLIENT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
+pub const ALLOWED_REDIRECTION_CODE: [u16; 5] = [301, 302, 303, 307, 308];
 
 #[derive(Debug, Clone, YamlStruct)]
 pub struct RouteConfig {
@@ -16,6 +17,7 @@ pub struct RouteConfig {
     #[parcast(default = "[GET]")]
     pub methods: Vec<String>,
     pub redirection: Option<String>,
+    pub redirect_code: Option<u16>,
     #[parcast(default = "./www")]
     pub root: String,
     #[parcast(default = "index.html")]
@@ -34,6 +36,7 @@ impl Default for RouteConfig {
             default_file: "index.html".into(),
             autoindex: false,
             redirection: None,
+            redirect_code: None,
             cgi_ext: None,
         }
     }
@@ -57,6 +60,8 @@ pub struct ServerConfig {
     pub routes: Vec<RouteConfig>,
     #[parcast(default = "false")]
     pub default_server: bool,
+    #[parcast(default = "./www")]
+    pub root: String,
 }
 
 impl Default for ServerConfig {
@@ -70,6 +75,7 @@ impl Default for ServerConfig {
             client_max_body_size: 1048576,
             routes: Vec::new(),
             default_server: false,
+            root: "./www".to_string(),
         }
     }
 }
@@ -124,6 +130,31 @@ impl AppConfig {
         for mut s_cfg in self.servers.drain(..) {
             let mut is_valid = true;
             let mut local_ports = HashSet::new();
+
+            let s_root = std::path::Path::new(&s_cfg.root);
+            if !s_root.exists() || !s_root.is_dir() {
+                errors!(
+                    "Server '{}': Global root '{:?}' is invalid.",
+                    s_cfg.server_name,
+                    s_cfg.root
+                );
+                is_valid = false;
+            }
+
+            for (&code, path_str) in &s_cfg.error_pages {
+                let full_path =
+                    std::path::Path::new(&s_cfg.root).join(path_str.trim_start_matches('/'));
+                if !full_path.exists() || !full_path.is_file() {
+                    warn!(
+                        "Server '{}': Error page {} for code {} not found or is not a file.",
+                        s_cfg.server_name,
+                        full_path.display(),
+                        code
+                    );
+                    // We don't necessarily kill the server for a missing error page,
+                    // but we warn the user.
+                }
+            }
 
             // 1. IP Validation
             if sync_host_fields(&mut s_cfg).is_err() {
@@ -194,6 +225,17 @@ impl AppConfig {
                             is_valid = false;
                             break;
                         }
+                    }
+                }
+
+                if let Some(code) = route.redirect_code {
+                    if !ALLOWED_REDIRECTION_CODE.contains(&code) {
+                        errors!(
+                            "Invalid status code {} for redirection found in config for server '{}'",
+                            code,
+                            s_cfg.server_name
+                        );
+                        is_valid = false;
                     }
                 }
             }

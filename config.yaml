@@ -3,13 +3,8 @@ servers:
     ports: [8080]
     server_name: "myproxy.local"
     default_server: true
-    client_max_body_size: 1048576  # 1MB
+    client_max_body_size: 1048576 # 1MB
     routes:
-      - path: "/"
-        methods: ["GET", "POST"]
-        root: "./www"
-        default_file: "index.html"
-        autoindex: false
       - path: "/list"
         methods: ["GET", "POST"]
         root: "./www"
@@ -20,10 +15,13 @@ servers:
         root: "./www/api"
         default_file: "api.html"
         autoindex: true
-        redirection: "https://api.example.com"
+        redirection: "https://example.com"
         cgi_ext: ".cgi"
+      - path: "/goog"
+        redirection: "https://google.com"
+        redirect_code: 302
       - path: "/upload"
-        methods: ["POST","GET"]
+        methods: ["POST", "GET"]
         root: "./www/uploads"
         default_file: ""
         autoindex: false
@@ -35,7 +33,7 @@ servers:
     error_pages:
       403: "/forbidden.html"
       405: "/forbidden.html"
-    client_max_body_size: 524288  # 512KB
+    client_max_body_size: 524288 # 512KB
     routes:
       - path: "./static"
         methods: ["GET"]
@@ -46,3 +44,9 @@ servers:
     ports: [4444, 2222]
     server_name: "proxy.local"
     default_server: false
+    routes:
+      - path: "/"
+        methods: ["GET", "POST"]
+        root: "./www"
+        default_file: ""
+        autoindex: true

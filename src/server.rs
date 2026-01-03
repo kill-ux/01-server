@@ -1,7 +1,7 @@
 use crate::config::{AppConfig, RouteConfig, ServerConfig};
 use crate::error::Result;
 use crate::http::*;
-use crate::router::{Router, RoutingError};
+use crate::router::RoutingError;
 use mio::{
     Events, Interest, Poll, Token,
     event::Event,
@@ -27,6 +27,8 @@ const HTTP_URI_TOO_LONG: u16 = 414;
 // 5xx Server Errors
 const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
 const HTTP_NOT_IMPLEMENTED: u16 = 501;
+
+const HTTP_FOUND: u16 = 302;
 
 pub struct HttpConnection {
     pub stream: TcpStream,
@@ -278,7 +280,10 @@ impl Server {
                         // Perform Routing
                         let response = match s_cfg.find_route(&request.url, &request.method) {
                             Ok(r_cfg) => {
-                                if r_cfg
+                                if let Some(ref redirect_url) = r_cfg.redirection {
+                                    let code = r_cfg.redirect_code.unwrap_or(HTTP_FOUND);
+                                    HttpResponse::redirect(code, redirect_url)
+                                } else if r_cfg
                                     .cgi_ext
                                     .as_ref()
                                     .map_or(false, |ext| request.url.ends_with(ext))
@@ -344,7 +349,11 @@ impl Server {
         HttpResponse::new(200, "OK").set_body(b"Hello World".to_vec(), "text/plain")
     }
 
-    pub fn handle_static_file(request: &HttpRequest, r_cfg: &RouteConfig, s_cfg: &Arc<ServerConfig>) -> HttpResponse {
+    pub fn handle_static_file(
+        request: &HttpRequest,
+        r_cfg: &RouteConfig,
+        s_cfg: &Arc<ServerConfig>,
+    ) -> HttpResponse {
         println!("{request}");
 
         let root = &r_cfg.root;

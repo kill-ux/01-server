@@ -47,4 +47,20 @@ impl HttpResponse {
         res.extend_from_slice(&self.body);
         res
     }
+
+    pub fn redirect(code: u16, target_url: &str) -> Self {
+        let status_text = match code {
+            301 => "Moved Permanently",
+            302 => "Found",
+            303 => "See Other",
+            307 => "Temporary Redirect",
+            308 => "Permanent Redirect",
+            _ => "Found",
+        };
+
+        HttpResponse::new(code, status_text)
+            .set_header("Location", target_url)
+            .set_header("Content-Length", "0")
+            .set_header("Connection", "close")
+    }
 }
