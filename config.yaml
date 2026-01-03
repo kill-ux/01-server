@@ -1,9 +1,43 @@
 servers:
-  - host: 127.0.0.1
-    ports: [8080, 5000, 6000]
-    server_name: kk
+  - host: "127.0.0.1"
+    ports: [8080]
+    server_name: "myproxy.local"
+    default_server: true
+    client_max_body_size: 1048576  # 1MB
     routes:
-      - path: /
-  - host: 127.0.0.1
-    ports: [5555]
-    server_name: kk
+      - path: "/"
+        methods: ["GET", "POST"]
+        root: "./www"
+        default_file: "index.html"
+        autoindex: false
+      - path: "./www/api"
+        methods: ["GET", "POST", "DELETE"]
+        root: "./www/api"
+        default_file: "api.html"
+        autoindex: true
+        redirection: "https://api.example.com"
+        cgi_ext: ".cgi"
+      - path: "/upload"
+        methods: ["POST","GET"]
+        root: "./www/uploads"
+        default_file: ""
+        autoindex: false
+
+  - host: "127.0.0.2"
+    ports: [8082]
+    server_name: "webserver.local"
+    default_server: false
+    error_pages:
+      403: "/forbidden.html"
+      405: "/forbidden.html"
+    client_max_body_size: 524288  # 512KB
+    routes:
+      - path: "./static"
+        methods: ["GET"]
+        root: "./www/static"
+        default_file: "index.html"
+        autoindex: true
+  - host: "127.0.0.3"
+    ports: [4444, 2222]
+    server_name: "proxy.local"
+    default_server: false

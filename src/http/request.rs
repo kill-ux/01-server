@@ -52,7 +52,8 @@ impl std::fmt::Display for Method {
 pub enum ParsingState {
     RequestLine,
     Headers,
-    Body(usize), // Content-Length
+    HeadersDone,
+    Body(usize, usize), // Content-Length
     Complete,
     Error,
 }
@@ -160,7 +161,9 @@ impl HttpRequest {
             let res = match self.state {
                 ParsingState::RequestLine => self.parse_request_line(),
                 ParsingState::Headers => self.parse_headers(),
-                ParsingState::Body(content_length) => self.parse_body(content_length),
+                ParsingState::Body(content_length, max_body_size) => {
+                    self.parse_body(content_length, max_body_size)
+                }
                 _ => return Ok(()),
             };
 
@@ -231,24 +234,22 @@ impl HttpRequest {
             match headers_option {
                 Some((k, v)) => self.headers.insert(k, v),
                 None => {
-                    let content_length = self
-                        .headers
-                        .get("Content-Length")
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(0);
-
-                    if content_length > 0 {
-                        self.state = ParsingState::Body(content_length);
-                    } else {
-                        self.state = ParsingState::Complete;
-                    }
+                    self.state = ParsingState::HeadersDone;
                     return Ok(());
                 }
             };
         }
     }
 
-    pub fn parse_body(&mut self, content_length: usize) -> core::result::Result<(), ParseError> {
+    pub fn parse_body(
+        &mut self,
+        content_length: usize,
+        max_body_size: usize,
+    ) -> core::result::Result<(), ParseError> {
+        // if conn.s_cfg.is_none() {
+        //     conn.s_cfg = Some(conn.resolve_config())
+        // }
+
         let available = self.buffer.len() - self.cursor;
 
         if available < content_length {

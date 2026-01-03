@@ -1,5 +1,5 @@
 use crate::config::{AppConfig, RouteConfig, ServerConfig};
-use crate::error::{CleanError, Result};
+use crate::error::Result;
 use crate::http::*;
 use crate::router::{Router, RoutingError};
 use mio::{
@@ -7,47 +7,69 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use proxy_log::{info, warn};
-use std::collections::{HashMap, HashSet};
+use proxy_log::{info};
+use std::collections::{HashMap};
+use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const READ_BUF_SIZE: usize = 4096;
 
 pub struct HttpConnection {
     pub stream: TcpStream,
-    pub addr: SocketAddr,
     pub write_buffer: Vec<u8>,
     pub request: HttpRequest,
-    pub config_idx: usize,
-    pub port: u16,
+    pub config_list: Vec<Arc<ServerConfig>>,
+    pub s_cfg: Option<Arc<ServerConfig>>,
 }
 
 impl HttpConnection {
-    pub fn new(stream: TcpStream, addr: SocketAddr, config_idx: usize, port: u16) -> Self {
+    pub fn new(stream: TcpStream, config_list: Vec<Arc<ServerConfig>>) -> Self {
         Self {
             stream,
-            addr,
             write_buffer: Vec::new(),
             request: HttpRequest::new(),
-            config_idx,
-            port,
+            config_list,
+            s_cfg: None,
         }
+    }
+
+    pub fn resolve_config(&self) -> Arc<ServerConfig> {
+        if let Some(host_header) = self.request.headers.get("Host") {
+            let hostname = host_header.split(':').next().unwrap_or("");
+
+            for config in &self.config_list {
+                if config.server_name == hostname {
+                    return Arc::clone(config);
+                }
+            }
+        }
+
+        // If no match found, find the default_server, or fallback to the first one
+        for config in &self.config_list {
+            if config.default_server {
+                return Arc::clone(config);
+            }
+        }
+
+        // Fallback to the first one
+        Arc::clone(&self.config_list[0])
     }
 }
 impl HttpConnection {
     // Returns true if the connection should be closed
-    fn read_data(&mut self, max_body_size: usize) -> core::result::Result<bool, ParseError> {
+    fn read_data(&mut self) -> core::result::Result<bool, ParseError> {
         let mut buf = [0u8; READ_BUF_SIZE]; // READ_BUF_SIZE
         loop {
             match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(true), // EOF
                 Ok(n) => {
-                    let absolute_limit: usize = 16_384 + max_body_size;
-                    if self.request.buffer.len() + n > absolute_limit {
-                        return Err(ParseError::PayloadTooLarge);
-                    }
+                    // let absolute_limit: usize = 16_384;
+                    // if self.request.buffer.len() + n > absolute_limit {
+                    //     return Err(ParseError::PayloadTooLarge);
+                    // }
                     self.request.buffer.extend_from_slice(&buf[..n]);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -70,77 +92,46 @@ impl HttpConnection {
 }
 
 pub struct Server {
-    pub listeners: HashMap<Token, TcpListener>,
+    pub listeners: HashMap<Token, (TcpListener, Vec<Arc<ServerConfig>>)>,
     pub connections: HashMap<Token, HttpConnection>,
-    pub router: Router,
-    pub config: AppConfig,
-    pub listener_to_servers: HashMap<Token, Vec<usize>>,
     next_token: usize,
 }
 
 impl Server {
     pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
         let mut listeners = HashMap::new();
-        let mut listener_to_servers = HashMap::new();
-        let mut addr_to_tokens = HashMap::new();
         let mut next_token = 0;
-        let mut router = Router::new();
 
         info!("Initializing server listeners...");
 
-        for (s_idx, s_cfg) in config.servers.iter().enumerate() {
-            for &port in &s_cfg.ports {
-                let addr: SocketAddr = format!("{}:{}", s_cfg.host_header(), port).parse()?;
+        let mut groups: HashMap<(String, u16), Vec<Arc<ServerConfig>>> = HashMap::new();
 
-                // If this address (IP:Port) isn't bound yet, bind it
-                let token = *addr_to_tokens.entry(addr).or_insert_with(|| {
-                    let t = Token(next_token);
-                    next_token += 1;
-                    t
-                });
-
-                if !listeners.contains_key(&token) {
-                    let mut listener = TcpListener::bind(addr)?;
-                    poll.registry()
-                        .register(&mut listener, token, Interest::READABLE)?;
-                    listeners.insert(token, listener);
-                }
-
-                // Associate this specific server block index with this listener token
-                listener_to_servers
-                    .entry(token)
-                    .or_insert_with(Vec::new)
-                    .push(s_idx);
-
-                // Populate Router: Map (Port + Host + Path) to the config
-                for r_cfg in &s_cfg.routes {
-                    router.add_route_config(
-                        port,
-                        &s_cfg.server_name,
-                        &r_cfg.path,
-                        Arc::new(r_cfg.clone()),
-                    );
-
-                    // If it's the default server for this port, also register the IP/Host-header
-                    if s_cfg.default_server {
-                        router.add_route_config(port, "_", &r_cfg.path, Arc::new(r_cfg.clone()));
-                        router.add_route_config(
-                            port,
-                            &s_cfg.host_header(),
-                            &r_cfg.path,
-                            Arc::new(r_cfg.clone()),
-                        );
-                    }
-                }
+        for s_cfg in config.servers {
+            let shared_s_cfg = Arc::new(s_cfg);
+            for &port in &shared_s_cfg.ports {
+                let key = (shared_s_cfg.host_header(), port);
+                groups
+                    .entry(key)
+                    .or_default()
+                    .push(Arc::clone(&shared_s_cfg));
             }
+        }
+
+        for ((host, port), config_list) in groups {
+            let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+            let token = Token(next_token);
+
+            let mut listener = TcpListener::bind(addr)?;
+            poll.registry()
+                .register(&mut listener, token, Interest::READABLE)?;
+            listeners.insert(token, (listener, config_list));
+
+            next_token += 1;
         }
 
         Ok(Self {
             listeners,
             connections: HashMap::new(),
-            router,
-            listener_to_servers,
-            config,
             next_token: next_token + 1,
         })
     }
@@ -177,26 +168,16 @@ impl Server {
     }
 
     pub fn handle_accept(&mut self, poll: &mut Poll, token: Token) -> Result<()> {
-        // Get the list of possible servers for this listener
-        let server_idxs = self
-            .listener_to_servers
-            .get(&token)
-            .ok_or("Unknown listener")?;
-        let port = self.listeners.get(&token).unwrap().local_addr()?.port();
+        let (listener, config_list) = self.listeners.get_mut(&token).unwrap();
 
-        let listener = self.listeners.get_mut(&token).unwrap();
         loop {
             match listener.accept() {
-                Ok((mut stream, addr)) => {
+                Ok((mut stream, _)) => {
                     let client_token = Token(self.next_token);
                     self.next_token += 1;
-
                     poll.registry()
                         .register(&mut stream, client_token, Interest::READABLE)?;
-
-                    // We store the PORT the client connected to
-                    let mut conn = HttpConnection::new(stream, addr, server_idxs[0], port);
-                    // conn.port = port; // You'll need to add 'port: u16' to HttpConnection struct
+                    let conn = HttpConnection::new(stream, config_list.clone());
                     self.connections.insert(client_token, conn);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -210,9 +191,8 @@ impl Server {
         let mut closed = false;
 
         if let Some(conn) = self.connections.get_mut(&token) {
-            let s_cfg = &self.config.servers[conn.config_idx];
             if event.is_readable() {
-                match conn.read_data(s_cfg.client_max_body_size) {
+                match conn.read_data() {
                     Ok(is_eof) => closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
                         let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -229,7 +209,7 @@ impl Server {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
 
-                    Self::process_static_request(poll, token, conn, &self.router)?;
+                    Self::proces_request(poll, token, conn)?;
                 }
             }
 
@@ -252,50 +232,69 @@ impl Server {
         Ok(())
     }
 
-    fn process_static_request(
-        poll: &Poll,
-        token: Token,
-        conn: &mut HttpConnection,
-        router: &Router,
-    ) -> Result<()> {
-        println!("### start prossing a request ###");
-        while conn.request.parse_request().is_ok() {
-            if conn.request.state == ParsingState::Complete {
-                let request = &conn.request;
-                let host = request
-                    .headers
-                    .get("Host")
-                    .and_then(|h| h.split(':').next())
-                    .ok_or_else(|| CleanError::from("Missing Host header"))?;
+    fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<()> {
+        println!("### start processing a request ###");
+        loop {
+            match conn.request.parse_request() {
+                Ok(()) => {
+                    if conn.request.state == ParsingState::HeadersDone {
+                        let s_cfg = conn.resolve_config();
+                        conn.s_cfg = Some(Arc::clone(&s_cfg));
 
-                dbg!(host);
+                        let content_length = conn
+                            .request
+                            .headers
+                            .get("Content-Length")
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(0);
 
-                let response = match router.resolve(conn.port, host, &request.url, &request.method)
-                {
-                    Ok(r_cfg) => {
-                        if let Some(ref cgi_ext) = r_cfg.cgi_ext {
-                            if request.url.ends_with(cgi_ext) {
-                                Server::handle_cgi(request, r_cfg)
-                            } else {
-                                Server::handle_static_file(request, r_cfg)
+                        if content_length > 0 {
+                            if content_length > s_cfg.client_max_body_size {
+                                // return Err(ParseError::PayloadTooLarge.into());
                             }
+                            conn.request.state =
+                                ParsingState::Body(content_length, s_cfg.client_max_body_size);
+                            continue;
                         } else {
-                            Server::handle_static_file(request, r_cfg)
+                            conn.request.state = ParsingState::Complete;
                         }
                     }
-                    Err(RoutingError::MethodNotAllowed) => Router::method_not_allowed(),
-                    Err(RoutingError::NotFound) => Router::not_found(),
-                };
 
-                println!("{}", conn.request);
-                conn.write_buffer.extend_from_slice(&response.to_bytes());
-                conn.request.finish_request();
+                    if conn.request.state == ParsingState::Complete {
+                        let request = &conn.request;
+                        let s_cfg = conn.s_cfg.as_ref().unwrap();
 
-                if conn.request.buffer.is_empty() {
-                    break;
+                        // Perform Routing
+                        let response = match s_cfg.find_route(&request.url, &request.method) {
+                            Ok(r_cfg) => {
+                                if r_cfg
+                                    .cgi_ext
+                                    .as_ref()
+                                    .map_or(false, |ext| request.url.ends_with(ext))
+                                {
+                                    Server::handle_cgi(request, r_cfg)
+                                } else {
+                                    Server::handle_static_file(request, r_cfg)
+                                }
+                            }
+                            Err(RoutingError::MethodNotAllowed) => Router::method_not_allowed(),
+                            Err(RoutingError::NotFound) => Router::not_found(),
+                        };
+
+                        conn.write_buffer.extend_from_slice(&response.to_bytes());
+                        conn.request.finish_request(); // Clean up for next request
+
+                        if conn.request.buffer.is_empty() {
+                            break;
+                        }
+                    } else {
+                        // Still in RequestLine, Headers, or Body state but buffer is empty
+                        break;
+                    }
                 }
-            } else {
-                break;
+                Err(_) => break,
+                //     Err(ParseError::IncompleteRequestLine) => break, // Need more data from socket
+                // Err(e) => return Err(e.into()),
             }
         }
 
@@ -316,11 +315,60 @@ impl Server {
         Ok(())
     }
 
-    pub fn handle_cgi(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
+    pub fn handle_cgi(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
         HttpResponse::new(200, "OK").set_body(b"Hello World".to_vec(), "text/plain")
     }
 
-    pub fn handle_static_file(_request: &HttpRequest, _r_cfg: Arc<RouteConfig>) -> HttpResponse {
-        HttpResponse::new(200, "OK").set_body(_r_cfg.path.as_bytes().to_vec(), "text/plain")
+    pub fn handle_static_file(request: &HttpRequest, r_cfg: &RouteConfig) -> HttpResponse {
+        let root = &r_cfg.root;
+        let relative_path = request
+            .url
+            .strip_prefix(&r_cfg.path)
+            .unwrap_or(&request.url);
+        let mut path = PathBuf::from(root);
+        path.push(relative_path.trim_start_matches('/'));
+
+        if path.is_dir() {
+            if  r_cfg.default_file != "" {
+                path.push(&r_cfg.default_file);
+            } else if r_cfg.autoindex {
+                // return Self::generate_autoindex(&path, &request.url);
+            } else {
+                return HttpResponse::new(403, "Forbidden").set_body(
+                    b"403 Forbidden: Directory listing denied".to_vec(),
+                    "text/plain",
+                );
+            }
+        }
+
+        match fs::read(&path) {
+            Ok(content) => {
+                let mime_type = Self::get_mime_type(path.extension().and_then(|s| s.to_str()));
+                HttpResponse::new(200, "OK").set_body(content, mime_type)
+            }
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => Router::not_found(),
+                std::io::ErrorKind::PermissionDenied => Router::forbidden(),
+                _ => Router::internal_server(),
+            },
+        }
     }
+
+    fn get_mime_type(extension: Option<&str>) -> &'static str {
+        match extension {
+            Some("html") | Some("htm") => "text/html",
+            Some("css") => "text/css",
+            Some("js") => "application/javascript",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("json") => "application/json",
+            Some("txt") => "text/plain",
+            _ => "application/octet-stream",
+        }
+    }
+
+    // fn generate_autoindex(path: Path, original_url: &str) -> HttpConnection {
+        
+    // }
 }

@@ -6,7 +6,7 @@ use std::{
 use parser_derive::YamlStruct;
 use proxy_log::{errors, warn};
 
-use crate::{error::CleanError, http::Method};
+use crate::{error::CleanError, http::Method, router::RoutingError};
 
 pub const DEFAULT_CLIENT_MAX_BODY_SIZE: usize = 1024 * 1024; // 1MB
 
@@ -80,6 +80,32 @@ impl ServerConfig {
             IpAddr::V4(ip) => ip.to_string(),
             IpAddr::V6(ip) => format!("[{ip}]"),
         }
+    }
+
+    pub fn find_route(&self, path: &str, method: &Method) -> Result<&RouteConfig, RoutingError> {
+        let mut best_match: Option<(&String, &RouteConfig)> = None;
+        for route in &self.routes {
+            if path.starts_with(&route.path) {
+                match best_match {
+                    None => best_match = Some((&route.path, route)),
+                    Some((best_prefix, _)) => {
+                        if route.path.len() > best_prefix.len() {
+                            best_match = Some((&route.path, route));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((_, r_cfg)) = best_match {
+            if method.is_allowed(&r_cfg.methods) {
+                return Ok(r_cfg);
+            } else {
+                return Err(RoutingError::MethodNotAllowed);
+            }
+        }
+
+        Err(RoutingError::NotFound)
     }
 }
 
