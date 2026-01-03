@@ -1,9 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    config::{RouteConfig},
-    http::*,
-};
+use crate::{config::RouteConfig, http::*};
 
 pub type Handler = fn(&HttpRequest) -> HttpResponse;
 
@@ -23,24 +20,6 @@ impl Router {
         Self {
             routes: HashMap::new(),
         }
-    }
-
-    pub fn not_found() -> HttpResponse {
-        HttpResponse::new(404, "NOT FOUND").set_body(b"404 - Page Not Found".to_vec(), "text/plain")
-    }
-
-    pub fn forbidden() -> HttpResponse {
-        HttpResponse::new(403, "Forbidden").set_body(b"403 Forbidden".to_vec(), "text/plain")
-    }
-
-    pub fn internal_server() -> HttpResponse {
-        HttpResponse::new(500, "Internal Server Error")
-                    .set_body(b"500 Internal Server Error".to_vec(), "text/plain")
-    }
-
-    pub fn method_not_allowed() -> HttpResponse {
-        HttpResponse::new(405, "METHOD NOT ALLOWED")
-            .set_body(b"405 - Method Not Allowed".to_vec(), "text/plain")
     }
 
     pub fn resolve(

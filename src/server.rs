@@ -7,8 +7,8 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use proxy_log::{info};
-use std::collections::{HashMap};
+use proxy_log::info;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
@@ -16,6 +16,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const READ_BUF_SIZE: usize = 4096;
+// 4xx Client Errors
+const HTTP_BAD_REQUEST: u16 = 400;
+const HTTP_FORBIDDEN: u16 = 403;
+const HTTP_NOT_FOUND: u16 = 404;
+const HTTP_METHOD_NOT_ALLOWED: u16 = 405;
+const HTTP_PAYLOAD_TOO_LARGE: u16 = 413;
+const HTTP_URI_TOO_LONG: u16 = 414;
+
+// 5xx Server Errors
+const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
+const HTTP_NOT_IMPLEMENTED: u16 = 501;
 
 pub struct HttpConnection {
     pub stream: TcpStream,
@@ -274,11 +285,15 @@ impl Server {
                                 {
                                     Server::handle_cgi(request, r_cfg)
                                 } else {
-                                    Server::handle_static_file(request, r_cfg)
+                                    Server::handle_static_file(request, r_cfg, s_cfg)
                                 }
                             }
-                            Err(RoutingError::MethodNotAllowed) => Router::method_not_allowed(),
-                            Err(RoutingError::NotFound) => Router::not_found(),
+                            Err(RoutingError::MethodNotAllowed) => {
+                                Self::handle_error(HTTP_METHOD_NOT_ALLOWED, conn.s_cfg.as_ref())
+                            }
+                            Err(RoutingError::NotFound) => {
+                                Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg))
+                            }
                         };
 
                         conn.write_buffer.extend_from_slice(&response.to_bytes());
@@ -292,9 +307,19 @@ impl Server {
                         break;
                     }
                 }
-                Err(_) => break,
-                //     Err(ParseError::IncompleteRequestLine) => break, // Need more data from socket
-                // Err(e) => return Err(e.into()),
+                Err(ParseError::IncompleteRequestLine) => break,
+                Err(e) => {
+                    let code = match e {
+                        ParseError::PayloadTooLarge => HTTP_PAYLOAD_TOO_LARGE,
+                        ParseError::InvalidMethod => HTTP_METHOD_NOT_ALLOWED,
+                        ParseError::HeaderTooLong => HTTP_URI_TOO_LONG,
+                        _ => HTTP_BAD_REQUEST,
+                    };
+                    let response = Self::handle_error(code, conn.s_cfg.as_ref());
+                    conn.write_buffer.extend_from_slice(&response.to_bytes());
+                    conn.request.finish_request();
+                    break;
+                }
             }
         }
 
@@ -319,7 +344,9 @@ impl Server {
         HttpResponse::new(200, "OK").set_body(b"Hello World".to_vec(), "text/plain")
     }
 
-    pub fn handle_static_file(request: &HttpRequest, r_cfg: &RouteConfig) -> HttpResponse {
+    pub fn handle_static_file(request: &HttpRequest, r_cfg: &RouteConfig, s_cfg: &Arc<ServerConfig>) -> HttpResponse {
+        println!("{request}");
+
         let root = &r_cfg.root;
         let relative_path = request
             .url
@@ -328,11 +355,13 @@ impl Server {
         let mut path = PathBuf::from(root);
         path.push(relative_path.trim_start_matches('/'));
 
+        dbg!(&path);
+
         if path.is_dir() {
-            if  r_cfg.default_file != "" {
+            if r_cfg.default_file != "" {
                 path.push(&r_cfg.default_file);
             } else if r_cfg.autoindex {
-                // return Self::generate_autoindex(&path, &request.url);
+                return Self::generate_autoindex(&path, &request.url);
             } else {
                 return HttpResponse::new(403, "Forbidden").set_body(
                     b"403 Forbidden: Directory listing denied".to_vec(),
@@ -347,9 +376,11 @@ impl Server {
                 HttpResponse::new(200, "OK").set_body(content, mime_type)
             }
             Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => Router::not_found(),
-                std::io::ErrorKind::PermissionDenied => Router::forbidden(),
-                _ => Router::internal_server(),
+                std::io::ErrorKind::NotFound => Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
+                std::io::ErrorKind::PermissionDenied => {
+                    Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg))
+                }
+                _ => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
             },
         }
     }
@@ -368,7 +399,46 @@ impl Server {
         }
     }
 
-    // fn generate_autoindex(path: Path, original_url: &str) -> HttpConnection {
-        
-    // }
+    fn generate_autoindex(path: &Path, original_url: &str) -> HttpResponse {
+        let mut html = format!("<html><body><h1>Index of {}</h1><ul>", original_url);
+        if let Ok(entries) = path.read_dir() {
+            for entry in entries.flatten() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    html.push_str(&format!(
+                        "<li><a href=\"{}/{}\">{}</a></li>",
+                        original_url.trim_end_matches('/'),
+                        name,
+                        name
+                    ));
+                }
+            }
+        }
+
+        html.push_str("</ul></body></html>");
+        HttpResponse::new(200, "OK").set_body(html.into_bytes(), "text/html")
+    }
+
+    pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpResponse {
+        let status_text = match code {
+            HTTP_BAD_REQUEST => "Bad Request",
+            HTTP_FORBIDDEN => "Forbidden",
+            HTTP_NOT_FOUND => "Not Found",
+            HTTP_METHOD_NOT_ALLOWED => "Method Not Allowed",
+            HTTP_PAYLOAD_TOO_LARGE => "Payload Too Large",
+            HTTP_URI_TOO_LONG => "URI Too Long",
+            HTTP_NOT_IMPLEMENTED => "Not Implemented",
+            _ => "Internal Server Error",
+        };
+
+        if let Some(cfg) = s_cfg {
+            if let Some(path_str) = cfg.error_pages.get(&code) {
+                if let Ok(content) = fs::read(path_str) {
+                    return HttpResponse::new(code, status_text).set_body(content, "text/html");
+                }
+            }
+        }
+
+        let body = format!("{} {}", code, status_text).into_bytes();
+        HttpResponse::new(code, status_text).set_body(body, "text/plain")
+    }
 }

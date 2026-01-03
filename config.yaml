@@ -10,7 +10,12 @@ servers:
         root: "./www"
         default_file: "index.html"
         autoindex: false
-      - path: "./www/api"
+      - path: "/list"
+        methods: ["GET", "POST"]
+        root: "./www"
+        default_file: ""
+        autoindex: true
+      - path: "/api"
         methods: ["GET", "POST", "DELETE"]
         root: "./www/api"
         default_file: "api.html"

@@ -246,9 +246,9 @@ impl HttpRequest {
         content_length: usize,
         max_body_size: usize,
     ) -> core::result::Result<(), ParseError> {
-        // if conn.s_cfg.is_none() {
-        //     conn.s_cfg = Some(conn.resolve_config())
-        // }
+        if content_length > max_body_size {
+            return Err(ParseError::PayloadTooLarge);
+        }
 
         let available = self.buffer.len() - self.cursor;
 
