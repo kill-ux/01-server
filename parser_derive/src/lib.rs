@@ -93,7 +93,10 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                     }
 
                     let field_name = field_ident.to_string();
-                    let yaml_key_name = rename.take().map(|s| s.trim_matches('"').to_string()).unwrap_or(field_name.clone());
+                    let yaml_key_name = rename
+                        .take()
+                        .map(|s| s.trim_matches('"').to_string())
+                        .unwrap_or(field_name.clone());
 
                     if field_name != "pub" && field_name != "crate" {
                         // Look ahead to see if 'Option' appears before the next comma
@@ -111,7 +114,7 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
                             k += 1;
                         }
 
-                        fields.push((field_name, is_option, yaml_key_name , pending_default.take()));
+                        fields.push((field_name, is_option, yaml_key_name, pending_default.take()));
                     }
                 }
             }
@@ -120,55 +123,47 @@ pub fn derive_yaml_struct(input: TokenStream) -> TokenStream {
 
     // 2. Generate FromYaml impl
     let mut generated = format!(
-        "impl parser::FromYaml for {name} {{
-            fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, parser::YamlError> {{
-                if let parser::YamlValue::Map(m) = value {{
-                    let known_fields = vec![{fields}];
-                    for key in m.keys() {{
-                        if !known_fields.contains(&key.to_string().as_str()) {{
-                            println!(\"\\x1b[1;33mWarning:\\x1b[0m Unknown field '{{}}' found in {name} configuration. Skipping it.\", key);
-                        }}
+    "impl parser::FromYaml for {name} {{
+        fn from_yaml(value: &parser::YamlValue) -> std::result::Result<Self, parser::YamlError> {{
+            if let parser::YamlValue::Map(m) = value {{
+                // Start with the Struct's default values
+                let mut obj = Self::default();
+                
+                // Track known fields for the warning system
+                let known_fields = vec![{known_fields_list}];
+                for key in m.keys() {{
+                    if !known_fields.contains(&key.to_string().as_str()) {{
+                        println!(\"\\x1b[1;33mWarning:\\x1b[0m Unknown field '{{}}' found in {name}. Skipping.\", key);
                     }}
-                    std::result::Result::Ok(Self {{",
-        name = struct_name, fields = fields
-            .iter()
-            .map(|(_, _, f, _)| format!("\"{}\"", f))
-            .collect::<Vec<String>>()
-            .join(", ")
-    );
+                }}
+                ",
+    name = struct_name,
+    known_fields_list = fields.iter().map(|(_, _, f, _)| format!("\"{}\"", f)).collect::<Vec<_>>().join(", ")
+);
 
-    for (field, is_option,yaml_key, default_value) in fields {
+    // 3. Generate the "Fill" logic
+    for (field, is_option, yaml_key, _) in fields {
         if is_option {
             generated.push_str(&format!(
-                "{field}: parser::FromYaml::from_yaml_opt(m.get(\"{yaml_key}\"), \"{field}\")?,",
-                field = field
-            ));
-        } else if let Some(def) = default_value {
-            let clean_def = def.trim_matches('"');
-            generated.push_str(&format!(
-                "{field}: match m.get(\"{yaml_key}\") {{
-                            Some(v) => parser::FromYaml::from_yaml(v)?, 
-                            None => {{
-                                // Reuse your actual Parser here!
-                                let mut p = parser::Parser::new(\"{clean_def}\")?;
-                                let default_yaml = p.parse()?;
-                                parser::FromYaml::from_yaml(&default_yaml)?
-                            }}
-                        }},",
+                "if let Some(v) = m.get(\"{yaml_key}\") {{
+                obj.{field} = parser::FromYaml::from_yaml_opt(Some(v), \"{field}\")?;
+            }}",
                 field = field,
-                clean_def = clean_def
+                yaml_key = yaml_key
             ));
         } else {
-            // Required field logic
             generated.push_str(&format!(
-            "{field}: parser::FromYaml::from_yaml(m.get(\"{yaml_key}\").ok_or_else(||  parser::YamlError::Generic(\"Missing required field: {field}\".into()))?)?,",
-            field = field
-        ));
+                "if let Some(v) = m.get(\"{yaml_key}\") {{
+                obj.{field} = parser::FromYaml::from_yaml(v)?;
+            }}",
+                field = field,
+                yaml_key = yaml_key
+            ));
         }
     }
 
-    generated.push_str("..std::default::Default::default() ");
-    generated.push_str("}) } else { std::result::Result::Err(parser::YamlError::Generic(\"Expected a Map\".into())) } } }");
+    generated.push_str("std::result::Result::Ok(obj)");
+    generated.push_str("} else { std::result::Result::Err(parser::YamlError::Generic(\"Expected a Map\".into())) } } }");
 
     generated.parse().expect("Generated code was invalid")
 }

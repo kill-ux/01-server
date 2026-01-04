@@ -162,7 +162,7 @@ impl<'a> Parser<'a> {
                     self.parse_map(val, current_indent)
                 } else {
                     // if just one identifier, treat as scalar if more then one word throw error
-                    
+
                     // Ok(YamlValue::Scalar(val))
                     let mut word_count = 1;
                     while let Token::Identifier(next_part) = self.lookahead {
@@ -183,6 +183,7 @@ impl<'a> Parser<'a> {
                 self.advance()?;
                 Ok(YamlValue::Scalar(val))
             }
+            Token::Eof => Ok(YamlValue::Scalar("")),
             _ => Err(YamlError::UnexpectedToken {
                 expected: "value".to_string(),
                 found: format!("{:?}", self.lookahead),

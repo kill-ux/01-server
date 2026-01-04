@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
     net::{IpAddr, Ipv4Addr},
+    path::Path,
 };
 
 use parser_derive::YamlStruct;
@@ -14,26 +16,24 @@ pub const ALLOWED_REDIRECTION_CODE: [u16; 5] = [301, 302, 303, 307, 308];
 #[derive(Debug, Clone, YamlStruct)]
 pub struct RouteConfig {
     pub path: String,
-    #[parcast(default = "[GET]")]
     pub methods: Vec<String>,
     pub redirection: Option<String>,
     pub redirect_code: Option<u16>,
-    #[parcast(default = "./www")]
     pub root: String,
-    #[parcast(default = "index.html")]
     pub default_file: String,
     pub cgi_ext: Option<String>,
-    #[parcast(default = "false")]
     pub autoindex: bool,
+    pub upload_dir: String,
 }
 
 impl Default for RouteConfig {
     fn default() -> Self {
         Self {
-            path: String::new(),
+            path: "/".into(),
             methods: vec!["GET".into()],
-            root: "./www".into(),
+            root: String::new(),
             default_file: "index.html".into(),
+            upload_dir: String::new(),
             autoindex: false,
             redirection: None,
             redirect_code: None,
@@ -44,23 +44,16 @@ impl Default for RouteConfig {
 
 #[derive(Debug, Clone, YamlStruct)]
 pub struct ServerConfig {
-    #[parcast(default = "127.0.0.1", rename = "host")]
+    #[parcast(rename = "host")]
     pub host_str: String,
     #[parcast(skip)]
     pub host: IpAddr,
-    #[parcast(default = "[8080]")]
     pub ports: Vec<u16>,
-    #[parcast(default = "_")]
     pub server_name: String,
-    #[parcast(default = "{}")]
     pub error_pages: HashMap<u16, String>,
-    #[parcast(default = "1048576")]
     pub client_max_body_size: usize,
-    #[parcast(default = "[]")]
     pub routes: Vec<RouteConfig>,
-    #[parcast(default = "false")]
     pub default_server: bool,
-    #[parcast(default = "./www")]
     pub root: String,
 }
 
@@ -126,13 +119,13 @@ impl AppConfig {
         let mut default_servers_per_port = HashMap::new();
         let mut valid_servers = Vec::new();
 
-        // Use drain to take ownership and rebuild the list
         for mut s_cfg in self.servers.drain(..) {
             let mut is_valid = true;
             let mut local_ports = HashSet::new();
 
+            // root
             let s_root = std::path::Path::new(&s_cfg.root);
-            if !s_root.exists() || !s_root.is_dir() {
+            if !can_read(s_root) || !s_root.is_dir() {
                 errors!(
                     "Server '{}': Global root '{:?}' is invalid.",
                     s_cfg.server_name,
@@ -141,18 +134,30 @@ impl AppConfig {
                 is_valid = false;
             }
 
+            // error pages
             for (&code, path_str) in &s_cfg.error_pages {
-                let full_path =
-                    std::path::Path::new(&s_cfg.root).join(path_str.trim_start_matches('/'));
-                if !full_path.exists() || !full_path.is_file() {
-                    warn!(
-                        "Server '{}': Error page {} for code {} not found or is not a file.",
+                match code {
+                    100..600 => {}
+                    _ => {
+                        errors!(
+                            "Server '{}': status code {} not allowed",
+                            s_cfg.server_name,
+                            code,
+                        );
+                        is_valid = false;
+                        break;
+                    }
+                }
+                let err_path = s_root.join(path_str.trim_start_matches('/'));
+                if !err_path.is_file() || !can_read(&err_path) {
+                    errors!(
+                        "Server '{}': Custom error page for {} not found at {:?}",
                         s_cfg.server_name,
-                        full_path.display(),
-                        code
+                        code,
+                        err_path
                     );
-                    // We don't necessarily kill the server for a missing error page,
-                    // but we warn the user.
+                    is_valid = false;
+                    break;
                 }
             }
 
@@ -201,15 +206,70 @@ impl AppConfig {
             }
 
             // 4. Route & Path Validation
-            for route in &s_cfg.routes {
+            for route in &mut s_cfg.routes {
                 // Check if root exists
-                let path = std::path::Path::new(&route.root);
-                if !path.exists() {
-                    warn!(
-                        "Server '{}' route '{}' root does not exist: {}",
-                        s_cfg.server_name, route.path, route.root
+
+                if route.root.is_empty() {
+                    route.root = s_cfg.root.clone();
+                }
+
+                let r_root = std::path::Path::new(&route.root);
+                if !r_root.is_dir() || !can_read(r_root) {
+                    errors!(
+                        "Route '{}': Root {:?} is not a directory.",
+                        route.path,
+                        route.root
                     );
                     is_valid = false;
+                    break;
+                }
+
+                if !route.upload_dir.is_empty() {
+                    let d_dire = r_root.join(&route.upload_dir);
+                        if !can_read(&d_dire) || !d_dire.is_dir() {
+                        errors!(
+                            "Route '{}': Upload dir {:?} not found.",
+                            route.path,
+                            route.default_file
+                        );
+                        is_valid = false;
+                        break;
+                    }
+                }
+
+                if !route.default_file.is_empty() {
+                    let d_file = r_root.join(&route.default_file);
+                    if !can_read(&d_file) || !d_file.is_file() {
+                        errors!(
+                            "Route '{}': Default file {:?} not found.",
+                            route.path,
+                            route.default_file
+                        );
+                        is_valid = false;
+                        break;
+                    }
+                }
+
+                
+
+                if let Some(ref ext) = route.cgi_ext {
+                    if !ext.starts_with('.') {
+                        errors!(
+                            "Route '{}': CGI extension '{}' must start with '.'",
+                            route.path,
+                            ext
+                        );
+                        is_valid = false;
+                        break;
+                    }
+                }
+
+                if let Some(ref _url) = route.redirection {
+                    let code = route.redirect_code.unwrap_or(302);
+                    if !(301..=308).contains(&code) {
+                        errors!("Route '{}': Invalid redirect code {}", route.path, code);
+                        is_valid = false;
+                    }
                 }
 
                 // Check methods
@@ -225,17 +285,6 @@ impl AppConfig {
                             is_valid = false;
                             break;
                         }
-                    }
-                }
-
-                if let Some(code) = route.redirect_code {
-                    if !ALLOWED_REDIRECTION_CODE.contains(&code) {
-                        errors!(
-                            "Invalid status code {} for redirection found in config for server '{}'",
-                            code,
-                            s_cfg.server_name
-                        );
-                        is_valid = false;
                     }
                 }
             }
@@ -413,4 +462,11 @@ pub fn sync_host_fields(config: &mut ServerConfig) -> Result<(), CleanError> {
     }
 
     Ok(())
+}
+
+fn can_read(path: &Path) -> bool {
+    match File::open(path) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }

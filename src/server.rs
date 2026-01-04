@@ -9,7 +9,7 @@ use mio::{
 };
 use proxy_log::info;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
 const HTTP_NOT_IMPLEMENTED: u16 = 501;
 
 const HTTP_FOUND: u16 = 302;
+const HTTP_CREATED: u16 = 201;
 
 pub struct HttpConnection {
     pub stream: TcpStream,
@@ -233,14 +234,12 @@ impl Server {
                         .reregister(&mut conn.stream, token, Interest::READABLE)?;
                 }
             }
-
-            if closed || event.is_read_closed() || event.is_write_closed() {
+            if closed {
                 // Borrow ends here, so we can remove safely below
             } else {
                 return Ok(()); // Keep connection alive
             }
         }
-
         self.connections.remove(&token);
         Ok(())
     }
@@ -276,7 +275,7 @@ impl Server {
                     if conn.request.state == ParsingState::Complete {
                         let request = &conn.request;
                         let s_cfg = conn.s_cfg.as_ref().unwrap();
-
+                        println!("{}", request);
                         // Perform Routing
                         let response = match s_cfg.find_route(&request.url, &request.method) {
                             Ok(r_cfg) => {
@@ -290,7 +289,13 @@ impl Server {
                                 {
                                     Server::handle_cgi(request, r_cfg)
                                 } else {
-                                    Server::handle_static_file(request, r_cfg, s_cfg)
+                                    match request.method {
+                                        Method::GET => Self::handle_get(request, r_cfg, s_cfg),
+                                        Method::POST => Self::handle_post(request, r_cfg, s_cfg),
+                                        Method::DELETE => {
+                                            Self::handle_delete(request, r_cfg, s_cfg)
+                                        }
+                                    }
                                 }
                             }
                             Err(RoutingError::MethodNotAllowed) => {
@@ -303,8 +308,7 @@ impl Server {
 
                         conn.write_buffer.extend_from_slice(&response.to_bytes());
                         conn.request.finish_request(); // Clean up for next request
-
-                        if conn.request.buffer.is_empty() {
+                        if conn.request.buffer[conn.request.cursor..].is_empty() {
                             break;
                         }
                     } else {
@@ -349,13 +353,11 @@ impl Server {
         HttpResponse::new(200, "OK").set_body(b"Hello World".to_vec(), "text/plain")
     }
 
-    pub fn handle_static_file(
+    pub fn handle_get(
         request: &HttpRequest,
         r_cfg: &RouteConfig,
         s_cfg: &Arc<ServerConfig>,
     ) -> HttpResponse {
-        println!("{request}");
-
         let root = &r_cfg.root;
         let relative_path = request
             .url
@@ -363,8 +365,6 @@ impl Server {
             .unwrap_or(&request.url);
         let mut path = PathBuf::from(root);
         path.push(relative_path.trim_start_matches('/'));
-
-        dbg!(&path);
 
         if path.is_dir() {
             if r_cfg.default_file != "" {
@@ -394,6 +394,128 @@ impl Server {
         }
     }
 
+    pub fn handle_post(
+        request: &HttpRequest,
+        r_cfg: &RouteConfig,
+        s_cfg: &Arc<ServerConfig>,
+    ) -> HttpResponse {
+        if r_cfg.upload_dir.is_empty() {
+            Self::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(s_cfg))
+        } else {
+            Self::handle_upload(request, r_cfg, s_cfg)
+        }
+    }
+
+    pub fn handle_upload(
+        req: &HttpRequest,
+        r_cfg: &RouteConfig,
+        s_cfg: &Arc<ServerConfig>,
+    ) -> HttpResponse {
+        let content_type = req
+            .headers
+            .get("Content-Type")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+
+        let boundary = content_type
+            .split("boundary=")
+            .nth(1)
+            .map(|b| b.trim())
+            .unwrap_or("");
+
+        let r_root = std::path::Path::new(&r_cfg.root);
+        let upload_path = r_root.join(&r_cfg.upload_dir);
+
+        if !boundary.is_empty() {
+            let boundary_str = format!("--{}", boundary);
+            let boundary_bytes = boundary_str.as_bytes();
+            let mut current_pos = 0;
+            let mut files_saved = 0;
+
+            while let Some(start_idx) =
+                find_subsequence(&req.body[current_pos..], boundary_bytes, current_pos)
+            {
+                dbg!("éhhhhhhhhhhhhhhhhhhhhhhhhhhh");
+                let part_start = start_idx + boundary_bytes.len() + 2;
+
+                if req.body.get(part_start - 2..part_start) == Some(b"--")
+                    || part_start >= req.body.len()
+                {
+                    break;
+                }
+
+                let header_sep = b"\r\n\r\n";
+                let data_start = match find_subsequence(&req.body, header_sep, part_start) {
+                    Some(idx) => idx + 4,
+                    None => break,
+                };
+
+                let data_end = match find_subsequence(&req.body, &boundary_bytes, data_start) {
+                    Some(idx) => idx - 2, // Subtract 2 to remove the trailing \r\n
+                    None => break,
+                };
+
+                let file_data = &req.body[data_start..data_end];
+
+                // 5. Extract filename and save
+                let headers_part = String::from_utf8_lossy(&req.body[part_start..data_start]);
+                let part_info = parse_part_headers(&headers_part);
+
+                if let Some(raw_fname) = part_info.filename {
+                    let clean_name = sanitize_filename(&raw_fname);
+                    let final_path = get_unique_path(&upload_path, &clean_name);
+
+                    if fs::write(final_path, file_data).is_ok() {
+                        files_saved += 1;
+                    }
+                }
+
+                // Move cursor to the next boundary for the next loop iteration
+                current_pos = data_end;
+            }
+
+            dbg!(String::from_utf8(&req.body[current_pos..]));
+
+            if files_saved > 0 {
+                return HttpResponse::new(HTTP_CREATED, "Created").set_body(
+                    format!("Saved {} files", files_saved).into_bytes(),
+                    "text/plain",
+                );
+            }
+            return Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
+        }
+
+        let mut file_name = req.extract_filename();
+        file_name.push_str(Self::get_ext_from_content_type(
+            req.headers.get("Content-Type").map_or("", |v| v),
+        ));
+
+        let full_path = upload_path.join(file_name);
+
+        let res = match File::create(&full_path) {
+            Ok(mut file) => match file.write_all(&req.body) {
+                Ok(_) => HttpResponse::new(HTTP_CREATED, "Created").set_body(
+                    "Uploaded files successfully".as_bytes().to_vec(),
+                    "text/plain",
+                ),
+                Err(_) => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg))
+            }
+            Err(_) => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+        };
+        res
+    }
+
+    pub fn handle_delete(
+        request: &HttpRequest,
+        r_cfg: &RouteConfig,
+        s_cfg: &Arc<ServerConfig>,
+    ) -> HttpResponse {
+        todo!("Handel delete request")
+    }
+
     fn get_mime_type(extension: Option<&str>) -> &'static str {
         match extension {
             Some("html") | Some("htm") => "text/html",
@@ -405,6 +527,27 @@ impl Server {
             Some("json") => "application/json",
             Some("txt") => "text/plain",
             _ => "application/octet-stream",
+        }
+    }
+
+    fn get_ext_from_content_type(content_type: &str) -> &str {
+        match content_type {
+            "application/json" => ".json",
+            "application/pdf" => ".pdf",
+            "application/xml" => ".xml",
+            "application/zip" => ".zip",
+            "audio/mpeg" => ".mp3",
+            "image/gif" => ".gif",
+            "image/jpeg" => ".jpg",
+            "image/png" => ".png",
+            "image/svg+xml" => ".svg",
+            "image/webp" => ".webp",
+            "text/css" => ".css",
+            "text/html" => ".html",
+            "text/javascript" => ".js",
+            "text/plain" => ".txt",
+            "video/mp4" => ".mp4",
+            _ => ".bin",
         }
     }
 
@@ -441,7 +584,9 @@ impl Server {
 
         if let Some(cfg) = s_cfg {
             if let Some(path_str) = cfg.error_pages.get(&code) {
-                if let Ok(content) = fs::read(path_str) {
+                let s_root = std::path::Path::new(&cfg.root);
+                let err_path = s_root.join(path_str.trim_start_matches('/'));
+                if let Ok(content) = fs::read(err_path) {
                     return HttpResponse::new(code, status_text).set_body(content, "text/html");
                 }
             }
@@ -450,4 +595,61 @@ impl Server {
         let body = format!("{} {}", code, status_text).into_bytes();
         HttpResponse::new(code, status_text).set_body(body, "text/plain")
     }
+}
+
+pub fn sanitize_filename(name: &str) -> String {
+    // 1. Use Path to extract only the file_name component
+    // This handles cases like "path/to/my_file.txt" -> "my_file.txt"
+    let path = std::path::Path::new(name);
+    let raw_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("default_upload");
+
+    // 2. Filter characters: Allow only Alphanumeric, dots, underscores, and hyphens
+    let sanitized: String = raw_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_' // Replace spaces or symbols with underscores
+            }
+        })
+        .collect();
+
+    // 3. Prevent hidden files or relative dots (e.g., "..", ".env") if desired
+    // For many servers, we force the name to start with a standard character
+    if sanitized.is_empty() || sanitized.starts_with('.') {
+        format!("upload_{}", sanitized)
+    } else {
+        sanitized
+    }
+}
+
+fn get_unique_path(directory: &PathBuf, filename: &str) -> PathBuf {
+    let mut full_path = directory.join(filename);
+    let mut counter = 1;
+
+    // While the file exists, append a (1), (2), etc.
+    while full_path.exists() {
+        let stem = Path::new(filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = Path::new(filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+
+        let new_name = if ext.is_empty() {
+            format!("{}_{}", stem, counter)
+        } else {
+            format!("{}_{}.{}", stem, counter, ext)
+        };
+
+        full_path = directory.join(new_name);
+        counter += 1;
+    }
+    full_path
 }

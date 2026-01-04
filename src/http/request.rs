@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     str::FromStr,
+    time::SystemTime,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -261,6 +262,41 @@ impl HttpRequest {
 
         Ok(())
     }
+
+    pub fn extract_filename(&self) -> String {
+        // let raw_name = if is_multipart(req) {
+        //     self.parse_multipart_filename(&req.body)
+        // }
+
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+            .to_string()
+    }
+
+    fn sanitize_filename(name: String) -> String {
+        let path = std::path::Path::new(&name);
+        // 1. Take only the file name part, ignore any paths they sent
+        let leaf = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("default_upload");
+
+        // 2. Replace spaces or weird characters if you want to be extra safe
+        leaf.replace(|c: char| !c.is_alphanumeric() && c != '.', "_")
+    }
+
+    // fn extract_from_multipart(part_header: &str) -> Option<String> {
+    //     part_header
+    //         .lines()
+    //         .find(|line| line.contains("Content-Disposition"))
+    //         .and_then(|line| {
+    //             line.split(';')
+    //                 .find(|s| s.trim().starts_with("filename="))
+    //                 .map(|s| s.split('=').last().trim().trim_matches('"').to_string())
+    //         })
+    // }
 }
 
 fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
@@ -275,6 +311,40 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
             return Some(start_offset + abs_r_pos_in_search);
         }
         current_pos = abs_r_pos_in_search + 1;
+    }
+    None
+}
+
+pub fn find_subsequence(buffer: &[u8], needle: &[u8], start_offset: usize) -> Option<usize> {
+
+    if needle.is_empty() {
+        return None;
+    }
+    let search_area = buffer.get(start_offset..)?;
+    let first_byte = needle[0];
+    let mut current_pos = 0;
+
+    // Use .iter().position() to find the first byte efficiently
+    while let Some(rel_pos) = search_area[current_pos..]
+        .iter()
+        .position(|&b| b == first_byte)
+    {
+        let abs_pos_in_search = current_pos + rel_pos;
+
+        // Check if the remaining bytes match
+        if let Some(candidate) =
+            search_area.get(abs_pos_in_search..abs_pos_in_search + needle.len())
+        {
+            if candidate == needle {
+                return Some(start_offset + abs_pos_in_search);
+            }
+        } else {
+            // Not enough bytes left in search_area to match needle
+            return None;
+        }
+
+        // Move forward to keep searching
+        current_pos = abs_pos_in_search + 1;
     }
     None
 }
@@ -305,4 +375,50 @@ impl Display for HttpRequest {
         writeln!(f, "\n--------------------")?;
         writeln!(f, "--------------------")
     }
+}
+
+pub struct PartInfo {
+    pub name: String,
+    pub filename: Option<String>,
+    pub content_type: String,
+}
+
+pub fn parse_part_headers(headers: &str) -> PartInfo {
+    let mut info = PartInfo {
+        name: String::new(),
+        filename: None,
+        content_type: "text/plain".to_string(), // Default MIME
+    };
+
+    for line in headers.lines() {
+        if line.starts_with("Content-Disposition:") {
+            // Extract 'name'
+            if let Some(n) = line.split(';').find(|s| s.trim().starts_with("name=")) {
+                info.name = n
+                    .split('=')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string();
+            }
+            // Extract 'filename'
+            if let Some(f) = line.split(';').find(|s| s.trim().starts_with("filename=")) {
+                info.filename = Some(
+                    f.split('=')
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim_matches('"')
+                        .to_string(),
+                );
+            }
+        } else if line.starts_with("Content-Type:") {
+            info.content_type = line
+                .split(':')
+                .nth(1)
+                .unwrap_or("text/plain")
+                .trim()
+                .to_string();
+        }
+    }
+    info
 }

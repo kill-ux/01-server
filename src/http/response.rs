@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct HttpResponse {
     pub version: String,
     pub status_code: u16,
@@ -14,7 +15,7 @@ impl HttpResponse {
             version: "HTTP/1.1".to_string(),
             status_code,
             status_text: status_text.to_string(),
-            headers: HashMap::new(),
+            headers: HashMap::from([("Content-Length".to_string(), "0".to_string())]),
             body: Vec::new(),
         }
     }
