@@ -450,12 +450,13 @@ impl Server {
                     None => break,
                 };
 
-                let data_end = match find_subsequence(&req.body, &boundary_bytes, data_start) {
+                let mut data_end = match find_subsequence(&req.body, &boundary_bytes, data_start) {
                     Some(idx) => idx - 2, // Subtract 2 to remove the trailing \r\n
                     None => break,
                 };
 
                 let file_data = &req.body[data_start..data_end];
+                data_end += 2;
 
                 // 5. Extract filename and save
                 let headers_part = String::from_utf8_lossy(&req.body[part_start..data_start]);
@@ -474,7 +475,7 @@ impl Server {
                 current_pos = data_end;
             }
 
-            dbg!(String::from_utf8(&req.body[current_pos..]));
+            dbg!(String::from_utf8_lossy(&req.body[current_pos..]));
 
             if files_saved > 0 {
                 return HttpResponse::new(HTTP_CREATED, "Created").set_body(
