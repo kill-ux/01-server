@@ -190,11 +190,11 @@ impl HttpRequest {
                 return Err(ParseError::IncompleteRequestLine);
             }
 
-            res?;
+            res?
 
-            if self.state == ParsingState::Complete {
-                break;
-            }
+            // if self.state == ParsingState::Complete {
+            //     break;
+            // }
         }
         Ok(())
     }
