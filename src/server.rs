@@ -219,7 +219,7 @@ impl Server {
                     Err(_) => closed = true,
                 };
 
-                if !closed && !conn.request.buffer.is_empty() {
+                if !closed && !conn.request.buffer.is_empty() && conn.write_buffer.is_empty() {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
 
@@ -232,8 +232,18 @@ impl Server {
                 if !closed && conn.write_buffer.is_empty() {
                     poll.registry()
                         .reregister(&mut conn.stream, token, Interest::READABLE)?;
+
+                    if !conn.request.buffer.is_empty()
+                        && conn.request.state == ParsingState::RequestLine
+                    {
+                        println!(
+                            "Write finished. Found leftover data in buffer, processing next request..."
+                        );
+                        Self::proces_request(poll, token, conn)?;
+                    }
                 }
             }
+
             if closed {
                 // Borrow ends here, so we can remove safely below
             } else {
@@ -263,7 +273,7 @@ impl Server {
                         if is_chunked {
                             conn.request.state =
                                 ParsingState::ChunkedBody(s_cfg.client_max_body_size);
-                            continue; 
+                            continue;
                         }
 
                         let content_length = conn
@@ -320,12 +330,11 @@ impl Server {
                         };
 
                         conn.write_buffer.extend_from_slice(&response.to_bytes());
-                        conn.request.finish_request(); // Clean up for next request
-                        if conn.request.buffer[conn.request.cursor..].is_empty() {
-                            break;
-                        }
+                        conn.request.finish_request();
+                        // if conn.request.buffer.is_empty() {
+                        break;
+                        // }
                     } else {
-                        // Still in RequestLine, Headers, or Body state but buffer is empty
                         break;
                     }
                 }

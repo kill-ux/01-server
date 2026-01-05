@@ -1,9 +1,12 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display},
+    fs::File,
     str::FromStr,
     time::SystemTime,
 };
+
+const _1MB: usize = 1_024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -60,19 +63,6 @@ pub enum ParsingState {
     Error,
 }
 
-/*
-BodyContentLength {
-        remaining: usize,
-        max_size: usize,
-    },
-    // Required for chunked requests
-    BodyChunked {
-        current_chunk_size: usize,
-        max_size: usize,
-        total_read: usize,
-    },
- */
-
 const CRLN_LEN: usize = 2;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +78,7 @@ pub enum ParseError {
     InvalidHeaderValue,
     PayloadTooLarge,
     ParseHexError,
+    ErrorCreateTempFile
 }
 
 impl fmt::Display for ParseError {
@@ -104,6 +95,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHeaderValue => write!(f, "Invalid header value"),
             ParseError::PayloadTooLarge => write!(f, "Payload too large"),
             ParseError::ParseHexError => write!(f, "Parse Hex Error"),
+            ParseError::ErrorCreateTempFile => write!(f, "Error Create Temp File")
         }
     }
 }
@@ -123,6 +115,8 @@ pub struct HttpRequest {
     pub version: String,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    pub body_file: Option<File>,
+    pub is_large_body: bool,
     pub buffer: Vec<u8>,
     pub cursor: usize,
     pub state: ParsingState,
@@ -145,6 +139,8 @@ impl HttpRequest {
             buffer: Vec::with_capacity(4096),
             cursor: 0,
             state: ParsingState::RequestLine,
+            is_large_body: false,
+            body_file: None,
         }
     }
 
@@ -175,7 +171,6 @@ impl HttpRequest {
                             Ok(())
                         }
                         Ok(false) => {
-                            // Not enough data yet to finish the current chunk
                             return Err(ParseError::IncompleteRequestLine);
                         }
                         Err(e) => Err(e),
@@ -185,16 +180,15 @@ impl HttpRequest {
                 _ => return Ok(()),
             };
 
-            // If we hit an incomplete state, stop and wait for more data from the socket
             if let Err(ParseError::IncompleteRequestLine) = res {
                 return Err(ParseError::IncompleteRequestLine);
             }
 
-            res?
+            res?;
 
-            // if self.state == ParsingState::Complete {
-            //     break;
-            // }
+            if self.state == ParsingState::Complete {
+                break;
+            }
         }
         Ok(())
     }
@@ -274,15 +268,21 @@ impl HttpRequest {
             return Err(ParseError::PayloadTooLarge);
         }
 
-        let available = self.buffer.len() - self.cursor;
+        if content_length > _1MB {
+            if self.body_file.is_none() {
+                let temp_path = format!("tmp_body_{}.tmp", self.extract_filename());
+                self.body_file = Some(File::create(temp_path));
+            }
+        } else {
+            let available = self.buffer.len() - self.cursor;
 
-        if available < content_length {
-            return Err(ParseError::IncompleteRequestLine);
+            if available < content_length {
+                return Err(ParseError::IncompleteRequestLine);
+            }
+            self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
+            self.cursor += content_length;
+            self.state = ParsingState::Complete;
         }
-        self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
-        self.cursor += content_length;
-        self.state = ParsingState::Complete;
-
         Ok(())
     }
 

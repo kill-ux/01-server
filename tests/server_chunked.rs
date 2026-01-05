@@ -116,4 +116,72 @@ mod integration_tests {
         let _ = fs::remove_dir_all(test_root);
         println!("Test finished and cleaned up.");
     }
+
+    #[test]
+    fn test_pipelined_requests() {
+        let test_root = "./tmp_pipeline_test";
+        let _ = fs::remove_dir_all(test_root); // Clean start
+        fs::create_dir_all(test_root).unwrap();
+        fs::write(format!("{}/index.html", test_root), "Hello").unwrap();
+
+        let mut config = AppConfig::default();
+        let mut router1 = RouteConfig::default();
+
+        // FIX 1: Set path to "/" so "/index.html" is found in test_root
+        router1.path = "/".to_string();
+        router1.root = test_root.to_string();
+        router1.methods = vec!["GET".to_string()];
+
+        let server_cfg = ServerConfig {
+            server_name: "localhost".to_string(), // Match the Host header in pipeline_data
+            ports: vec![8081], // Use a different port than the chunked test to avoid conflicts
+            root: test_root.to_string(),
+            routes: vec![router1],
+            default_server: true,
+            ..Default::default()
+        };
+        config.servers.push(server_cfg);
+
+        thread::spawn(move || {
+            let poll = Poll::new().unwrap();
+            let mut server = Server::new(config, &poll).unwrap();
+            server.run(poll).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(300));
+
+        let mut stream = TcpStream::connect("127.0.0.1:8081").unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        // 3. Send TWO requests
+        let pipeline_data = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n\
+                             GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+        stream.write_all(pipeline_data.as_bytes()).unwrap();
+
+        // 4. Read Response 1
+        let mut buffer = [0u8; 4096];
+        let n1 = stream.read(&mut buffer).unwrap();
+        let res1 = String::from_utf8_lossy(&buffer[..n1]);
+        println!("Received First Buffer:\n{}", res1);
+
+        // Check for 200 OK (or 404 if pathing is still off, to see what happened)
+        assert!(
+            res1.contains("200 OK"),
+            "First response was not 200 OK. Check server logs."
+        );
+
+        // 5. Read Response 2
+        // If Response 2 isn't in the first read, read again.
+        if res1.matches("HTTP/1.1").count() < 2 {
+            let n2 = stream.read(&mut buffer).unwrap();
+            let res2 = String::from_utf8_lossy(&buffer[..n2]);
+            println!("Received Second Buffer:\n{}", res2);
+            assert!(res2.contains("200 OK"), "Second response was not 200 OK");
+        }
+
+        let _ = fs::remove_dir_all(test_root);
+    }
 }
