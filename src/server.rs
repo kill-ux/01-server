@@ -253,6 +253,19 @@ impl Server {
                         let s_cfg = conn.resolve_config();
                         conn.s_cfg = Some(Arc::clone(&s_cfg));
 
+                        let is_chunked = conn
+                            .request
+                            .headers
+                            .get("transfer-encoding")
+                            .map(|v| v.contains("chunked"))
+                            .unwrap_or(false);
+
+                        if is_chunked {
+                            conn.request.state =
+                                ParsingState::ChunkedBody(s_cfg.client_max_body_size);
+                            continue; 
+                        }
+
                         let content_length = conn
                             .request
                             .headers

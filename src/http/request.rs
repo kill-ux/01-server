@@ -87,6 +87,7 @@ pub enum ParseError {
     InvalidHeaderName,
     InvalidHeaderValue,
     PayloadTooLarge,
+    ParseHexError,
 }
 
 impl fmt::Display for ParseError {
@@ -102,6 +103,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHeaderName => write!(f, "Invalid header name"),
             ParseError::InvalidHeaderValue => write!(f, "Invalid header value"),
             ParseError::PayloadTooLarge => write!(f, "Payload too large"),
+            ParseError::ParseHexError => write!(f, "Parse Hex Error"),
         }
     }
 }
@@ -166,16 +168,35 @@ impl HttpRequest {
                 ParsingState::Body(content_length, max_body_size) => {
                     self.parse_unchunked_body(content_length, max_body_size)
                 }
-                ParsingState::ChunkedBody(max_body_size) => self.parse_chunked_body(max_body_size),
+                ParsingState::ChunkedBody(max_body_size) => {
+                    match self.parse_chunked_body(max_body_size) {
+                        Ok(true) => {
+                            self.state = ParsingState::Complete;
+                            Ok(())
+                        }
+                        Ok(false) => {
+                            // Not enough data yet to finish the current chunk
+                            return Err(ParseError::IncompleteRequestLine);
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                ParsingState::Complete => return Ok(()),
                 _ => return Ok(()),
             };
 
+            // If we hit an incomplete state, stop and wait for more data from the socket
             if let Err(ParseError::IncompleteRequestLine) = res {
                 return Err(ParseError::IncompleteRequestLine);
             }
 
             res?;
+
+            if self.state == ParsingState::Complete {
+                break;
+            }
         }
+        Ok(())
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
@@ -268,33 +289,43 @@ impl HttpRequest {
     pub fn parse_chunked_body(
         &mut self,
         max_body_size: usize,
-    ) -> core::result::Result<(), ParseError> {
-        todo!("doesnt work");
-        // let mut decoded_body = Vec::new();
-        // loop {
-        //     // 1. Find the \r\n that ends the hex size
-        //     let line_end = find_subsequence(&buffer[*cursor..], b"\r\n", 0).unwrap();
-        //     let hex_str = String::from_utf8_lossy(&buffer[*cursor..*cursor + line_end]);
-        //     let chunk_size = usize::from_str_radix(hex_str.trim(), 16).unwrap();
+    ) -> core::result::Result<bool, ParseError> {
+        loop {
+            let current_slice = &self.buffer[self.cursor..];
 
-        //     *cursor += line_end + 2; // Move past size and \r\n
+            match find_subsequence(current_slice, b"\r\n", 0) {
+                Some(line_end) => {
+                    let hex_str = String::from_utf8_lossy(&current_slice[..line_end]);
+                    let chunk_size = usize::from_str_radix(hex_str.trim(), 16)
+                        .map_err(|_| ParseError::ParseHexError)?;
 
-        //     if chunk_size == 0 {
-        //         break;
-        //     } // Last chunk
+                    let total_chunk_needed = line_end + 2 + chunk_size + 2;
+                    if current_slice.len() < total_chunk_needed {
+                        return Ok(false); // Wait for more data
+                    }
 
-        //     // 2. Read the data
-        //     decoded_body.extend_from_slice(&buffer[*cursor..*cursor + chunk_size]);
-        //     *cursor += chunk_size + 2; // Move past data and the trailing \r\n
-        // }
-        // decoded_body
+                    if chunk_size == 0 {
+                        self.cursor += total_chunk_needed;
+                        return Ok(true); // Chunked body finished!
+                    }
+
+                    if self.body.len() + chunk_size > max_body_size {
+                        return Err(ParseError::PayloadTooLarge);
+                    }
+
+                    let data_start = self.cursor + line_end + 2;
+                    self.body
+                        .extend_from_slice(&self.buffer[data_start..data_start + chunk_size]);
+
+                    // 4. Move cursor past everything (size\r\n + data + \r\n)
+                    self.cursor += total_chunk_needed;
+                }
+                None => return Ok(false),
+            }
+        }
     }
 
     pub fn extract_filename(&self) -> String {
-        // let raw_name = if is_multipart(req) {
-        //     self.parse_multipart_filename(&req.body)
-        // }
-
         format!(
             "uploaded_{}",
             SystemTime::now()
@@ -316,17 +347,6 @@ impl HttpRequest {
         // 2. Replace spaces or weird characters if you want to be extra safe
         leaf.replace(|c: char| !c.is_alphanumeric() && c != '.', "_")
     }
-
-    // fn extract_from_multipart(part_header: &str) -> Option<String> {
-    //     part_header
-    //         .lines()
-    //         .find(|line| line.contains("Content-Disposition"))
-    //         .and_then(|line| {
-    //             line.split(';')
-    //                 .find(|s| s.trim().starts_with("filename="))
-    //                 .map(|s| s.split('=').last().trim().trim_matches('"').to_string())
-    //         })
-    // }
 }
 
 fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
