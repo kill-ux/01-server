@@ -78,7 +78,6 @@ pub enum ParseError {
     InvalidHeaderValue,
     PayloadTooLarge,
     ParseHexError,
-    ErrorCreateTempFile
 }
 
 impl fmt::Display for ParseError {
@@ -95,7 +94,6 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHeaderValue => write!(f, "Invalid header value"),
             ParseError::PayloadTooLarge => write!(f, "Payload too large"),
             ParseError::ParseHexError => write!(f, "Parse Hex Error"),
-            ParseError::ErrorCreateTempFile => write!(f, "Error Create Temp File")
         }
     }
 }
@@ -268,21 +266,15 @@ impl HttpRequest {
             return Err(ParseError::PayloadTooLarge);
         }
 
-        if content_length > _1MB {
-            if self.body_file.is_none() {
-                let temp_path = format!("tmp_body_{}.tmp", self.extract_filename());
-                self.body_file = Some(File::create(temp_path));
-            }
-        } else {
-            let available = self.buffer.len() - self.cursor;
+        let available = self.buffer.len() - self.cursor;
 
-            if available < content_length {
-                return Err(ParseError::IncompleteRequestLine);
-            }
-            self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
-            self.cursor += content_length;
-            self.state = ParsingState::Complete;
+        if available < content_length {
+            return Err(ParseError::IncompleteRequestLine);
         }
+        self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
+        self.cursor += content_length;
+        self.state = ParsingState::Complete;
+
         Ok(())
     }
 
