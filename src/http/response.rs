@@ -24,6 +24,7 @@ impl HttpResponse {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
+    
 
     pub fn set_body(mut self, body: Vec<u8>, content_type: &str) -> Self {
         self.headers

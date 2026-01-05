@@ -54,7 +54,8 @@ pub enum ParsingState {
     RequestLine,
     Headers,
     HeadersDone,
-    Body(usize, usize), // Content-Length
+    Body(usize, usize),
+    ChunkedBody(usize),
     Complete,
     Error,
 }
@@ -163,8 +164,9 @@ impl HttpRequest {
                 ParsingState::RequestLine => self.parse_request_line(),
                 ParsingState::Headers => self.parse_headers(),
                 ParsingState::Body(content_length, max_body_size) => {
-                    self.parse_body(content_length, max_body_size)
+                    self.parse_unchunked_body(content_length, max_body_size)
                 }
+                ParsingState::ChunkedBody(max_body_size) => self.parse_chunked_body(max_body_size),
                 _ => return Ok(()),
             };
 
@@ -221,7 +223,7 @@ impl HttpRequest {
             if let Some(sep) = line.find(':') {
                 let key = line[..sep].trim().to_string();
                 let val = line[sep + 1..].trim().to_string();
-                return Ok(Some((key, val)));
+                return Ok(Some((key.to_ascii_lowercase(), val)));
             }
             Err(ParseError::MalformedRequestLine)
         } else {
@@ -242,7 +244,7 @@ impl HttpRequest {
         }
     }
 
-    pub fn parse_body(
+    pub fn parse_unchunked_body(
         &mut self,
         content_length: usize,
         max_body_size: usize,
@@ -263,16 +265,44 @@ impl HttpRequest {
         Ok(())
     }
 
+    pub fn parse_chunked_body(
+        &mut self,
+        max_body_size: usize,
+    ) -> core::result::Result<(), ParseError> {
+        todo!("doesnt work");
+        // let mut decoded_body = Vec::new();
+        // loop {
+        //     // 1. Find the \r\n that ends the hex size
+        //     let line_end = find_subsequence(&buffer[*cursor..], b"\r\n", 0).unwrap();
+        //     let hex_str = String::from_utf8_lossy(&buffer[*cursor..*cursor + line_end]);
+        //     let chunk_size = usize::from_str_radix(hex_str.trim(), 16).unwrap();
+
+        //     *cursor += line_end + 2; // Move past size and \r\n
+
+        //     if chunk_size == 0 {
+        //         break;
+        //     } // Last chunk
+
+        //     // 2. Read the data
+        //     decoded_body.extend_from_slice(&buffer[*cursor..*cursor + chunk_size]);
+        //     *cursor += chunk_size + 2; // Move past data and the trailing \r\n
+        // }
+        // decoded_body
+    }
+
     pub fn extract_filename(&self) -> String {
         // let raw_name = if is_multipart(req) {
         //     self.parse_multipart_filename(&req.body)
         // }
 
-        SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-            .to_string()
+        format!(
+            "uploaded_{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+                .to_string()
+        )
     }
 
     fn sanitize_filename(name: String) -> String {
@@ -316,7 +346,6 @@ fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
 }
 
 pub fn find_subsequence(buffer: &[u8], needle: &[u8], start_offset: usize) -> Option<usize> {
-
     if needle.is_empty() {
         return None;
     }
@@ -377,6 +406,7 @@ impl Display for HttpRequest {
     }
 }
 
+#[derive(Debug)]
 pub struct PartInfo {
     pub name: String,
     pub filename: Option<String>,
@@ -387,7 +417,7 @@ pub fn parse_part_headers(headers: &str) -> PartInfo {
     let mut info = PartInfo {
         name: String::new(),
         filename: None,
-        content_type: "text/plain".to_string(), // Default MIME
+        content_type: String::new(),
     };
 
     for line in headers.lines() {

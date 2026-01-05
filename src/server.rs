@@ -51,7 +51,7 @@ impl HttpConnection {
     }
 
     pub fn resolve_config(&self) -> Arc<ServerConfig> {
-        if let Some(host_header) = self.request.headers.get("Host") {
+        if let Some(host_header) = self.request.headers.get("host") {
             let hostname = host_header.split(':').next().unwrap_or("");
 
             for config in &self.config_list {
@@ -256,7 +256,7 @@ impl Server {
                         let content_length = conn
                             .request
                             .headers
-                            .get("Content-Length")
+                            .get("content-length")
                             .and_then(|s| s.parse::<usize>().ok())
                             .unwrap_or(0);
 
@@ -413,7 +413,7 @@ impl Server {
     ) -> HttpResponse {
         let content_type = req
             .headers
-            .get("Content-Type")
+            .get("content-type")
             .map(|s| s.as_str())
             .unwrap_or("");
 
@@ -425,17 +425,14 @@ impl Server {
 
         let r_root = std::path::Path::new(&r_cfg.root);
         let upload_path = r_root.join(&r_cfg.upload_dir);
-
         if !boundary.is_empty() {
+            let mut saved_filenames = Vec::new();
             let boundary_str = format!("--{}", boundary);
             let boundary_bytes = boundary_str.as_bytes();
             let mut current_pos = 0;
             let mut files_saved = 0;
 
-            while let Some(start_idx) =
-                find_subsequence(&req.body[current_pos..], boundary_bytes, current_pos)
-            {
-                dbg!("éhhhhhhhhhhhhhhhhhhhhhhhhhhh");
+            while let Some(start_idx) = find_subsequence(&req.body, boundary_bytes, current_pos) {
                 let part_start = start_idx + boundary_bytes.len() + 2;
 
                 if req.body.get(part_start - 2..part_start) == Some(b"--")
@@ -450,55 +447,77 @@ impl Server {
                     None => break,
                 };
 
-                let mut data_end = match find_subsequence(&req.body, &boundary_bytes, data_start) {
-                    Some(idx) => idx - 2, // Subtract 2 to remove the trailing \r\n
-                    None => break,
-                };
+                let next_boundary_idx =
+                    match find_subsequence(&req.body, boundary_bytes, data_start) {
+                        Some(idx) => idx,
+                        None => break,
+                    };
 
+                let data_end = next_boundary_idx - 2;
                 let file_data = &req.body[data_start..data_end];
-                data_end += 2;
 
-                // 5. Extract filename and save
                 let headers_part = String::from_utf8_lossy(&req.body[part_start..data_start]);
                 let part_info = parse_part_headers(&headers_part);
-
                 if let Some(raw_fname) = part_info.filename {
-                    let clean_name = sanitize_filename(&raw_fname);
+                    let mut clean_name;
+                    if raw_fname.is_empty() {
+                        clean_name = req.extract_filename();
+                        clean_name
+                            .push_str(Self::get_ext_from_content_type(&part_info.content_type));
+                    } else {
+                        clean_name = sanitize_filename(&raw_fname);
+                    }
+
                     let final_path = get_unique_path(&upload_path, &clean_name);
+                    let actual_name = final_path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
 
                     if fs::write(final_path, file_data).is_ok() {
                         files_saved += 1;
+                        saved_filenames.push(actual_name);
                     }
                 }
 
                 // Move cursor to the next boundary for the next loop iteration
-                current_pos = data_end;
+                current_pos = next_boundary_idx;
             }
 
-            dbg!(String::from_utf8_lossy(&req.body[current_pos..]));
-
             if files_saved > 0 {
-                return HttpResponse::new(HTTP_CREATED, "Created").set_body(
-                    format!("Saved {} files", files_saved).into_bytes(),
-                    "text/plain",
-                );
+                let mut res = HttpResponse::new(HTTP_CREATED, "Created");
+                if files_saved == 1 {
+                    res.headers.insert(
+                        "location".to_string(),
+                        format!("/upload/{}", saved_filenames[0]),
+                    );
+                    return res.set_body(
+                        format!("File saved as {}", saved_filenames[0]).into_bytes(),
+                        "text/plain",
+                    );
+                }
+                let body_msg = format!("Saved files: {}", saved_filenames.join(", "));
+                return res.set_body(body_msg.into_bytes(), "text/plain");
             }
             return Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
         }
 
         let mut file_name = req.extract_filename();
         file_name.push_str(Self::get_ext_from_content_type(
-            req.headers.get("Content-Type").map_or("", |v| v),
+            req.headers.get("content-type").map_or("", |v| v),
         ));
 
-        let full_path = upload_path.join(file_name);
+        let full_path = upload_path.join(&file_name);
 
         let res = match File::create(&full_path) {
             Ok(mut file) => match file.write_all(&req.body) {
-                Ok(_) => HttpResponse::new(HTTP_CREATED, "Created").set_body(
-                    "Uploaded files successfully".as_bytes().to_vec(),
-                    "text/plain",
-                ),
+                Ok(_) => HttpResponse::new(HTTP_CREATED, "Created")
+                    .set_header("Location", &format!("/upload/{}", file_name))
+                    .set_body(
+                        format!("File saved as {}", file_name).into_bytes(),
+                        "text/plain",
+                    ),
                 Err(_) => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
             },
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -514,7 +533,44 @@ impl Server {
         r_cfg: &RouteConfig,
         s_cfg: &Arc<ServerConfig>,
     ) -> HttpResponse {
-        todo!("Handel delete request")
+        let upload_base = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
+
+        // e.g., /upload/test.txt -> test.txt
+        let relative_path = request.url.strip_prefix(&r_cfg.path).unwrap_or("");
+        let target_path = upload_base.join(relative_path.trim_start_matches('/'));
+
+        // 3. Security: Canonicalize and Path Traversal Check
+        // This prevents DELETE /upload/../../etc/passwd
+        let absolute_upload_base = match upload_base.canonicalize() {
+            Ok(path) => path,
+            Err(_) => return Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
+        };
+
+        let absolute_target = match target_path.canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                return match e.kind() {
+                    ErrorKind::NotFound => Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
+                    _ => Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg)),
+                };
+            }
+        };
+
+        if !absolute_target.starts_with(&absolute_upload_base) {
+            return Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg));
+        }
+
+        if absolute_target.is_dir() {
+            return Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg));
+        }
+
+        match fs::remove_file(&absolute_target) {
+            Ok(_) => HttpResponse::new(204, "No Content"),
+            Err(e) => match e.kind() {
+                ErrorKind::PermissionDenied => Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg)),
+                _ => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+            },
+        }
     }
 
     fn get_mime_type(extension: Option<&str>) -> &'static str {

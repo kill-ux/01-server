@@ -23,7 +23,7 @@ servers:
         redirection: "https://google.com"
         redirect_code: 302
       - path: "/upload"
-        methods: ["POST", "GET"]
+        methods: ["POST", "GET", "DELETE"]
         root: "./www"
         default_file: ""
         autoindex: false
