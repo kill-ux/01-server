@@ -2,8 +2,21 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     fs::File,
+    io::Write,
+    path::PathBuf,
+    process::ChildStdin,
     str::FromStr,
+    sync::Arc,
     time::SystemTime,
+};
+
+use crate::{
+    http::HttpResponse,
+    router::RoutingError,
+    server::{
+        ActiveAction, HTTP_FOUND, HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND, HttpConnection, Server,
+        Upload, UploadState,
+    },
 };
 
 const _1MB: usize = 1_024 * 1024;
@@ -154,41 +167,139 @@ impl HttpRequest {
         self.clear();
     }
 
-    pub fn parse_request(&mut self) -> core::result::Result<(), ParseError> {
+    pub fn parse_request(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
         loop {
-            let res = match self.state {
-                ParsingState::RequestLine => self.parse_request_line(),
-                ParsingState::Headers => self.parse_headers(),
-                ParsingState::Body(content_length, max_body_size) => {
-                    self.parse_unchunked_body(content_length, max_body_size)
-                }
-                ParsingState::ChunkedBody(max_body_size) => {
-                    match self.parse_chunked_body(max_body_size) {
-                        Ok(true) => {
-                            self.state = ParsingState::Complete;
-                            Ok(())
-                        }
-                        Ok(false) => {
-                            return Err(ParseError::IncompleteRequestLine);
-                        }
-                        Err(e) => Err(e),
+            let res = match conn.request.state {
+                ParsingState::RequestLine => conn.request.parse_request_line(),
+                ParsingState::Headers => HttpRequest::parse_headers(conn),
+                ParsingState::HeadersDone => {
+                    if let Some(res) = HttpRequest::setup_action(conn) {
+                        ///// dddddddddd
+                        conn.write_buffer.extend_from_slice(&res.to_bytes());
+                        conn.request.state = ParsingState::Complete;
                     }
+                    Ok(())
                 }
-                ParsingState::Complete => return Ok(()),
-                _ => return Ok(()),
+                ParsingState::Body(cl, max) => HttpRequest::parse_unchunked_body(conn, cl),
+                ParsingState::ChunkedBody(max) => match conn.request.parse_chunked_body(max) {
+                    Ok(true) => {
+                        conn.request.state = ParsingState::Complete;
+                        Ok(())
+                    }
+                    Ok(false) => {
+                        return Err(ParseError::IncompleteRequestLine);
+                    }
+                    Err(e) => Err(e),
+                },
+                ParsingState::Complete => break,
+                ParsingState::Error => break,
             };
 
-            if let Err(ParseError::IncompleteRequestLine) = res {
-                return Err(ParseError::IncompleteRequestLine);
-            }
-
-            res?;
-
-            if self.state == ParsingState::Complete {
-                break;
+            match res {
+                Ok(_) => {
+                    if conn.request.state == ParsingState::Complete {
+                        break;
+                    }
+                }
+                Err(ParseError::IncompleteRequestLine) => {
+                    return Err(ParseError::IncompleteRequestLine);
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(())
+    }
+
+    pub fn setup_action(conn: &mut HttpConnection) -> Option<HttpResponse> {
+        let s_cfg = conn.resolve_config();
+        conn.s_cfg = Some(Arc::clone(&s_cfg));
+
+        let content_length = conn
+            .request
+            .headers
+            .get("content-length")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let is_chunked = conn
+            .request
+            .headers
+            .get("transfer-encoding")
+            .map(|v| v.contains("chunked"))
+            .unwrap_or(false);
+
+        let content_type = conn
+            .request
+            .headers
+            .get("content-type")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+
+        conn.boundary = content_type
+            .split("boundary=")
+            .nth(1)
+            .map(|b| b.trim())
+            .unwrap_or("")
+            .to_string();
+
+        // 1. Initial Size Check
+        if !is_chunked && content_length > s_cfg.client_max_body_size {
+            return Some(Server::handle_error(413, Some(&s_cfg)));
+        }
+
+        conn.body_remaining = content_length;
+
+        // 2. Resolve Route and Set Intent
+        let request = &conn.request;
+        let res = match s_cfg.find_route(&request.url, &request.method) {
+            Ok(r_cfg) => {
+                if let Some(ref redirect_url) = r_cfg.redirection {
+                    Some(HttpResponse::redirect(
+                        r_cfg.redirect_code.unwrap_or(HTTP_FOUND),
+                        redirect_url,
+                    ))
+                } else if r_cfg
+                    .cgi_ext
+                    .as_ref()
+                    .map_or(false, |ext| request.url.ends_with(ext))
+                {
+                    conn.action = Some(ActiveAction::Cgi(String::new()));
+                    None
+                } else {
+                    match request.method {
+                        Method::GET => Some(Server::handle_get(request, r_cfg, &s_cfg)),
+                        Method::POST => {
+                            // Decide if we will upload to a file
+                            if !r_cfg.upload_dir.is_empty() {
+                                let path = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
+                                conn.action = Some(ActiveAction::Upload(path));
+                                None
+                            } else {
+                                Some(Server::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+                            }
+                        }
+                        Method::DELETE => Some(Server::handle_delete(request, r_cfg, &s_cfg)),
+                    }
+                }
+            }
+            Err(RoutingError::MethodNotAllowed) => {
+                Some(Server::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+            }
+            Err(RoutingError::NotFound) => Some(Server::handle_error(HTTP_NOT_FOUND, Some(&s_cfg))),
+        };
+
+        // 3. Update State based on body presence
+        if res.is_none() {
+            if is_chunked {
+                conn.request.state = ParsingState::ChunkedBody(s_cfg.client_max_body_size);
+            } else if content_length > 0 {
+                conn.request.state = ParsingState::Body(content_length, s_cfg.client_max_body_size);
+            } else {
+                conn.request.state = ParsingState::Complete;
+            }
+        }
+
+        res
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
@@ -244,13 +355,13 @@ impl HttpRequest {
         }
     }
 
-    fn parse_headers(&mut self) -> core::result::Result<(), ParseError> {
+    fn parse_headers(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
         loop {
-            let headers_option = self.extract_and_parse_header()?;
+            let headers_option = conn.request.extract_and_parse_header()?;
             match headers_option {
-                Some((k, v)) => self.headers.insert(k, v),
+                Some((k, v)) => conn.request.headers.insert(k, v),
                 None => {
-                    self.state = ParsingState::HeadersDone;
+                    conn.request.state = ParsingState::HeadersDone;
                     return Ok(());
                 }
             };
@@ -258,22 +369,29 @@ impl HttpRequest {
     }
 
     pub fn parse_unchunked_body(
-        &mut self,
+        conn: &mut HttpConnection,
         content_length: usize,
-        max_body_size: usize,
     ) -> core::result::Result<(), ParseError> {
-        if content_length > max_body_size {
-            return Err(ParseError::PayloadTooLarge);
+        if let Some(s_cfg) = &conn.s_cfg {
+            let available = conn.request.buffer.len() - conn.request.cursor;
+            let to_process = std::cmp::min(available, conn.body_remaining);
+
+            if to_process > 0 {
+                let start = conn.request.cursor;
+                // let chunk = &conn.request.buffer[start..start + to_process];
+
+                HttpRequest::execute_active_action(conn, start, to_process)?;
+
+                conn.body_remaining -= to_process;
+                conn.request.buffer.drain(start..start + to_process);
+            }
         }
 
-        let available = self.buffer.len() - self.cursor;
-
-        if available < content_length {
+        if conn.body_remaining == 0 {
+            conn.request.state = ParsingState::Complete;
+        } else {
             return Err(ParseError::IncompleteRequestLine);
         }
-        self.body = self.buffer[self.cursor..self.cursor + content_length].to_vec();
-        self.cursor += content_length;
-        self.state = ParsingState::Complete;
 
         Ok(())
     }
@@ -315,6 +433,55 @@ impl HttpRequest {
                 None => return Ok(false),
             }
         }
+    }
+
+    pub fn execute_active_action(
+        conn: &mut HttpConnection,
+        start: usize,
+        to_process: usize,
+    ) -> Result<(), ParseError> {
+        let chunk = &conn.request.buffer[start..start + to_process];
+        if let Some(s_cfg) = &conn.s_cfg {
+            match &conn.action {
+                Some(ActiveAction::Upload(upload_path)) => {
+                    if conn.upload_manager.is_none() {
+                        conn.upload_manager = Some(Upload {
+                            state: UploadState::SavedFilenames(Vec::new()), // Changed to track progress
+                            path: upload_path,
+                        });
+                    }
+
+                    if let Some(ref mut mgr) = conn.upload_manager {
+                        if !conn.boundary.is_empty() {
+                            mgr.handle_upload_3(
+                                &conn.request,
+                                &mgr.path.clone(),
+                                conn.s_cfg.as_ref().unwrap(),
+                                chunk,
+                                conn.boundary
+                            );
+                        } else {
+                            mgr.handle_upload_2(
+                                &conn.request,
+                                &mgr.path.clone(),
+                                conn.s_cfg.as_ref().unwrap(),
+                                chunk,
+                            );
+                        }
+                    }
+                }
+                Some(ActiveAction::Cgi(_)) => {
+                    // Future: write to child process stdin
+                }
+                Some(ActiveAction::Discard) => {}
+                None => {
+                    // If it's a small normal POST, keep in RAM
+                    // conn.request.body.extend_from_slice(chunk);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn extract_filename(&self) -> String {
