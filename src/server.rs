@@ -322,7 +322,7 @@ impl Server {
 
                         if let Some(upload_manager) = &conn.upload_manager {
                             let response = if upload_manager.saved_filenames.len() > 0 {
-                                let mut res  = HttpResponse::new(HTTP_CREATED, "Created");
+                                let mut res = HttpResponse::new(HTTP_CREATED, "Created");
                                 if upload_manager.saved_filenames.len() == 1 {
                                     res.headers.insert(
                                         "location".to_string(),
@@ -846,7 +846,9 @@ impl Upload {
                     {
                         let data_end = next_boundary_idx - 2; // Subtract \r\n
 
-                        self.save_file_part(req, data_start, data_end);
+                        if self.part_info.filename.is_some() {
+                            self.save_file_part(req, data_start, data_end);
+                        }
 
                         // Move to next part and clear the buffer of what we used
                         self.buffer.drain(..next_boundary_idx);
