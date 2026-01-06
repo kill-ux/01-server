@@ -91,6 +91,7 @@ pub enum ParseError {
     InvalidHeaderValue,
     PayloadTooLarge,
     ParseHexError,
+    Error(u16),
 }
 
 impl fmt::Display for ParseError {
@@ -107,6 +108,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHeaderValue => write!(f, "Invalid header value"),
             ParseError::PayloadTooLarge => write!(f, "Payload too large"),
             ParseError::ParseHexError => write!(f, "Parse Hex Error"),
+            ParseError::Error(_) => write!(f, "other error"),
         }
     }
 }
@@ -167,7 +169,9 @@ impl HttpRequest {
         self.clear();
     }
 
-    pub fn parse_request(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
+    pub fn parse_request<'a>(
+        conn: &mut HttpConnection,
+    ) -> core::result::Result<(), ParseError> {
         loop {
             let res = match conn.request.state {
                 ParsingState::RequestLine => conn.request.parse_request_line(),
@@ -375,12 +379,22 @@ impl HttpRequest {
         if let Some(s_cfg) = &conn.s_cfg {
             let available = conn.request.buffer.len() - conn.request.cursor;
             let to_process = std::cmp::min(available, conn.body_remaining);
+            let cursor = conn.request.cursor;
 
             if to_process > 0 {
                 let start = conn.request.cursor;
                 // let chunk = &conn.request.buffer[start..start + to_process];
 
-                HttpRequest::execute_active_action(conn, start, to_process)?;
+                // HttpRequest::execute_active_action(conn, start, to_process)?;
+
+                HttpRequest::execute_active_action(
+                    &conn.request,
+                    &mut conn.upload_manager,
+                    &conn.action,
+                    cursor,
+                    to_process,
+                    &conn.boundary
+                )?;
 
                 conn.body_remaining -= to_process;
                 conn.request.buffer.drain(start..start + to_process);
@@ -435,49 +449,46 @@ impl HttpRequest {
         }
     }
 
-    pub fn execute_active_action(
-        conn: &mut HttpConnection,
+    pub fn execute_active_action<'a>(
+        request: &HttpRequest,
+        upload_manager: &mut Option<Upload>,
+        action: &Option<ActiveAction>,
         start: usize,
         to_process: usize,
+        boundary: &str
     ) -> Result<(), ParseError> {
-        let chunk = &conn.request.buffer[start..start + to_process];
-        if let Some(s_cfg) = &conn.s_cfg {
-            match &conn.action {
-                Some(ActiveAction::Upload(upload_path)) => {
-                    if conn.upload_manager.is_none() {
-                        conn.upload_manager = Some(Upload {
-                            state: UploadState::SavedFilenames(Vec::new()), // Changed to track progress
-                            path: upload_path,
-                        });
-                    }
+        let chunk = &request.buffer[start..start + to_process];
+        match &action {
+            Some(ActiveAction::Upload(upload_path)) => {
+                if upload_manager.is_none() {
+                    let upload_path = upload_path.clone();
+                    *upload_manager = Some(Upload::new(upload_path, boundary));
+                }
 
-                    if let Some(ref mut mgr) = conn.upload_manager {
-                        if !conn.boundary.is_empty() {
-                            mgr.handle_upload_3(
-                                &conn.request,
-                                &mgr.path.clone(),
-                                conn.s_cfg.as_ref().unwrap(),
-                                chunk,
-                                conn.boundary
-                            );
-                        } else {
-                            mgr.handle_upload_2(
-                                &conn.request,
-                                &mgr.path.clone(),
-                                conn.s_cfg.as_ref().unwrap(),
-                                chunk,
-                            );
-                        }
+                if let Some(mgr) = upload_manager {
+                    if !boundary.is_empty() {
+                        mgr.handle_upload_3(
+                            &request,
+                            chunk,
+                        );
+                    } else {
+                        mgr.handle_upload_2(
+                            &request,
+                            chunk,
+                        );
+                    }
+                    if let UploadState::Error(code) = mgr.state {
+                        return Err(ParseError::Error(code));
                     }
                 }
-                Some(ActiveAction::Cgi(_)) => {
-                    // Future: write to child process stdin
-                }
-                Some(ActiveAction::Discard) => {}
-                None => {
-                    // If it's a small normal POST, keep in RAM
-                    // conn.request.body.extend_from_slice(chunk);
-                }
+            }
+            Some(ActiveAction::Cgi(_)) => {
+                // Future: write to child process stdin
+            }
+            Some(ActiveAction::Discard) => {}
+            None => {
+                // If it's a small normal POST, keep in RAM
+                // conn.request.body.extend_from_slice(chunk);
             }
         }
 
@@ -585,7 +596,7 @@ impl Display for HttpRequest {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PartInfo {
     pub name: String,
     pub filename: Option<String>,
