@@ -45,7 +45,7 @@ pub struct HttpConnection {
     pub body_remaining: usize,
     pub boundary: String,
     pub closed: bool,
-    pub linger_until: Option<Instant>
+    pub linger_until: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -114,7 +114,7 @@ impl HttpConnection {
             body_remaining: 0,
             boundary: String::new(),
             closed: false,
-            linger_until: None
+            linger_until: None,
         }
     }
 
@@ -151,14 +151,13 @@ impl HttpConnection {
             match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(true), // EOF
                 Ok(n) => {
-                    
                     // let absolute_limit: usize = 16_384;
                     // if self.request.buffer.len() + n > absolute_limit {
                     //     return Err(ParseError::PayloadTooLarge);
                     // }
 
                     self.request.buffer.extend_from_slice(&buf[..n]);
-                    if self.request.buffer.len() >= MAX_READ_DATA {
+                    if self.request.buffer.len() >= MAX_READ_DATA / 2 {
                         break;
                     }
                 }
@@ -352,7 +351,7 @@ impl Server {
 
     fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<bool> {
         let mut closed = false;
-        dbg!("### start processing a request ###");
+        // dbg!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(conn) {
                 Ok(()) => {
@@ -401,7 +400,6 @@ impl Server {
 
                             conn.write_buffer.extend_from_slice(&response.to_bytes());
                         }
-                        dbg!("hhhhhhhhhhhhhhhh");
                         conn.request.finish_request();
                         // conn.request.buffer.clear();
 
@@ -785,14 +783,24 @@ impl Upload {
                     if let Some(next_boundary_idx) =
                         find_subsequence(&self.buffer, boundary_bytes, data_start)
                     {
-                        let data_end = next_boundary_idx - 2; // Subtract \r\n
+                        // 1. Identify where the binary data actually ends (before the \r\n)
+                        let mut data_end = next_boundary_idx;
+                        if next_boundary_idx >= 2
+                            && &self.buffer[next_boundary_idx - 2..next_boundary_idx] == b"\r\n"
+                        {
+                            data_end -= 2;
+                        }
+
+                        // 2. Save the final chunk of this file
                         if self.part_info.filename.is_some() {
                             self.save_file_part(req, data_start, data_end);
                         }
 
-                        // Move to next part and clear the buffer of what we used
+                        // 3. CLEANUP FOR NEXT PART
+                        // Remove everything up to the boundary so the buffer is fresh
                         self.buffer.drain(..next_boundary_idx);
                         self.current_pos = 0;
+                        self.current_file_path = None; // Reset so next file gets a new name
                         self.multi_part_state = MultiPartState::Start;
                     } else {
                         self.flush_partial_data(req);
@@ -803,35 +811,98 @@ impl Upload {
         }
     }
 
+    // fn flush_partial_data(&mut self, req: &HttpRequest) {
+    //     let boundary_len = self.boundary.len() + 10; // --boundary\r\n
+
+    //     if self.buffer.len() > boundary_len {
+    //         let write_end = self.buffer.len() - boundary_len;
+    //         let data_to_write = if let MultiPartState::NextBoundary(data_start) = self.multi_part_state {
+    //             if write_end > data_start {
+    //              &self.buffer[data_start..write_end]
+    //             } else {
+    //              return; // Nothing new to write yet
+    //             }
+    //         } else {
+    //             return;
+    //         };
+
+    //         // let data_to_write = &self.buffer[..write_end];
+
+    //         let target_path = if let Some(ref path) = self.current_file_path {
+    //             path.clone()
+    //         } else {
+    //             let path = self
+    //                 .get_current_part_path(req)
+    //                 .unwrap_or_else(|| PathBuf::from("tmp_upload"));
+    //             let unique =
+    //                 get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
+    //             self.current_file_path = Some(unique.clone());
+    //             unique
+    //         };
+
+    //         if let Ok(mut file) = OpenOptions::new()
+    //             .create(true)
+    //             .append(true)
+    //             .open(&target_path)
+    //         {
+    //             let _ = file.write_all(data_to_write);
+    //         }
+
+    //         self.buffer.drain(..write_end);
+    //         self.current_pos = 0;
+    //         self.multi_part_state = MultiPartState::NextBoundary(data_start);
+    //     }
+    // }
+
     fn flush_partial_data(&mut self, req: &HttpRequest) {
-        let boundary_len = self.boundary.len() + 6; // --boundary\r\n
+        // We must keep enough bytes to avoid writing a partial boundary to the file
+        let safety_margin = self.boundary.len() + 10;
 
-        if self.buffer.len() > boundary_len {
-            let write_end = self.buffer.len() - boundary_len;
-            let data_to_write = &self.buffer[..write_end];
+        if let MultiPartState::NextBoundary(data_start) = self.multi_part_state {
+            if self.buffer.len() > (data_start + safety_margin) {
+                let write_end = self.buffer.len() - safety_margin;
+                let data_to_write = &self.buffer[data_start..write_end];
 
-            let target_path = if let Some(ref path) = self.current_file_path {
-                path.clone()
-            } else {
-                let path = self
-                    .get_current_part_path(req)
-                    .unwrap_or_else(|| PathBuf::from("tmp_upload"));
-                let unique =
-                    get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
-                self.current_file_path = Some(unique.clone());
-                unique
-            };
+                let target_path = if let Some(ref path) = self.current_file_path {
+                    path.clone()
+                } else {
+                    let path = self
+                        .get_current_part_path(req)
+                        .unwrap_or_else(|| PathBuf::from("tmp_upload"));
+                    let unique =
+                        get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
+                    self.current_file_path = Some(unique.clone());
+                    unique
+                };
 
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&target_path)
-            {
-                let _ = file.write_all(data_to_write);
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&target_path)
+                {
+                    let _ = file.write_all(data_to_write);
+
+                    // Track filename for the response
+                    // let fname = target_path
+                    //     .file_name()
+                    //     .unwrap()
+                    //     .to_string_lossy()
+                    //     .into_owned();
+                    // if !self.saved_filenames.contains(&fname) {
+                    //     self.saved_filenames.push(fname);
+                    //     self.files_saved += 1;
+                    // }
+                }
+
+                // DRAIN ONLY THE DATA WRITTEN
+                // This moves the "start of data" back to the current position
+                self.buffer.drain(data_start..write_end);
+
+                // IMPORTANT: Since we drained the data we just read,
+                // the NEW data_start is now exactly where we were.
+                self.multi_part_state = MultiPartState::NextBoundary(data_start);
+                self.current_pos = data_start;
             }
-
-            self.buffer.drain(..write_end);
-            self.current_pos = 0;
         }
     }
 
@@ -866,6 +937,7 @@ impl Upload {
 
     fn save_file_part(&mut self, req: &HttpRequest, data_start: usize, data_end: usize) {
         let data = &self.buffer[data_start..data_end];
+
         let final_path = if let Some(path) = self.current_file_path.take() {
             path
         } else {

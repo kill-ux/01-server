@@ -216,6 +216,17 @@ mod integration_tests {
         println!("First chunk data sent.");
         sleep(Duration::from_millis(500));
 
+        stream.write_all(b"B\r\n")?; // Hex B = 11 bytes
+        stream.flush()?;
+        println!("First chunk size sent. Sleeping (Server is now in ReadData state)...");
+        sleep(Duration::from_millis(500));
+
+        stream.write_all(b"Hello World")?;
+        stream.write_all(b"\r\n")?; // Trailing CRLF
+        stream.flush()?;
+        println!("First chunk data sent.");
+        sleep(Duration::from_millis(500));
+
         // 4. Send the TERMINAL chunk (Size 0)
         // We split the "0\r\n\r\n" to see if the server waits correctly
         stream.write_all(b"0\r\n")?;
@@ -230,5 +241,28 @@ mod integration_tests {
         // Stay alive for a second to read the response
         sleep(Duration::from_secs(1));
         Ok(())
+    }
+
+    #[test]
+    fn test_payload_too_large_linger() {
+        let mut stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+
+        // 1. Send headers
+        let headers =
+            "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n";
+        stream.write_all(headers.as_bytes()).unwrap();
+
+        // 2. Send a chunk size that exceeds your limit (e.g., fffffffff)
+        stream.write_all(b"FFFFFFFFF\r\n").unwrap();
+        stream.flush().unwrap();
+
+        // 3. Try to read the response IMMEDIATELY
+        let mut response = [0u8; 512];
+        let n = stream.read(&mut response).expect("Server closed too fast!");
+        let res_text = String::from_utf8_lossy(&response[..n]);
+
+        // 4. Verify we got the 413 and not a "Connection Reset"
+        assert!(res_text.contains("413 Payload Too Large"));
+        println!("Verified: Server sent 413 before closing.");
     }
 }
