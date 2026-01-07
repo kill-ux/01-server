@@ -239,6 +239,7 @@ impl HttpRequest {
             .map(|s| s.as_str())
             .unwrap_or("");
 
+
         conn.boundary = content_type
             .split("boundary=")
             .nth(1)
@@ -275,6 +276,8 @@ impl HttpRequest {
                         Method::POST => {
                             // Decide if we will upload to a file
                             if !r_cfg.upload_dir.is_empty() {
+
+        dbg!(content_length);
                                 let path = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
                                 conn.action = Some(ActiveAction::Upload(path));
                                 None
@@ -307,7 +310,9 @@ impl HttpRequest {
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
+        
         if let Some(abs_index) = find_crlf(&self.buffer, self.cursor) {
+            dbg!("parse_request_line");
             // let abs_index = self.cursor + index;
 
             let line_bytes = &self.buffer[self.cursor..abs_index];
@@ -387,6 +392,7 @@ impl HttpRequest {
 
                 // HttpRequest::execute_active_action(conn, start, to_process)?;
 
+
                 HttpRequest::execute_active_action(
                     &conn.request,
                     &mut conn.upload_manager,
@@ -414,6 +420,7 @@ impl HttpRequest {
         &mut self,
         max_body_size: usize,
     ) -> core::result::Result<bool, ParseError> {
+        
         loop {
             let current_slice = &self.buffer[self.cursor..];
 
@@ -642,3 +649,6 @@ pub fn parse_part_headers(headers: &str) -> PartInfo {
     }
     info
 }
+
+
+

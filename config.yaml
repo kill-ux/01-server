@@ -3,7 +3,7 @@ servers:
     ports: [8080]
     server_name: "myproxy.local"
     default_server: true
-    client_max_body_size: 1048576 # 1MB
+    client_max_body_size: 5000000000 # 1MB
     routes:
       - path: "/"
         methods: ["GET"]

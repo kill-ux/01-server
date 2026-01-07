@@ -31,6 +31,7 @@ pub const HTTP_NOT_IMPLEMENTED: u16 = 501;
 pub const HTTP_FOUND: u16 = 302;
 pub const HTTP_CREATED: u16 = 201;
 
+#[derive(Debug)]
 pub struct HttpConnection {
     pub stream: TcpStream,
     pub write_buffer: Vec<u8>,
@@ -44,12 +45,14 @@ pub struct HttpConnection {
     pub boundary: String,
 }
 
+#[derive(Debug)]
 pub enum ActiveAction {
     Upload(PathBuf),
     Cgi(String), // we use ChildStdin
     Discard,
 }
 
+#[derive(Debug)]
 pub enum UploadState {
     InProgress,
     Done,
@@ -68,10 +71,12 @@ impl Upload {
             saved_filenames: Vec::new(),
             files_saved: 0,
             part_info: PartInfo::default(),
+            current_file_path: None,
         }
     }
 }
 
+#[derive(Debug)]
 pub struct Upload {
     pub state: UploadState,
     pub multi_part_state: MultiPartState,
@@ -84,8 +89,10 @@ pub struct Upload {
     pub saved_filenames: Vec<String>,
     pub files_saved: usize,
     pub part_info: PartInfo,
+    pub current_file_path: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 pub enum MultiPartState {
     Start,
     HeaderSep,
@@ -130,6 +137,9 @@ impl HttpConnection {
         Arc::clone(&self.config_list[0])
     }
 }
+
+const MAX_READ_DATA: usize = u16::MAX as usize; // 64KB
+
 impl HttpConnection {
     // Returns true if the connection should be closed
     fn read_data(&mut self) -> core::result::Result<bool, ParseError> {
@@ -142,7 +152,11 @@ impl HttpConnection {
                     // if self.request.buffer.len() + n > absolute_limit {
                     //     return Err(ParseError::PayloadTooLarge);
                     // }
+
                     self.request.buffer.extend_from_slice(&buf[..n]);
+                    if self.request.buffer.len() >= MAX_READ_DATA {
+                        break;
+                    }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(_) => return Ok(true),
@@ -277,6 +291,9 @@ impl Server {
                     Err(_) => closed = true,
                 };
 
+                poll.registry()
+                    .reregister(&mut conn.stream, token, Interest::READABLE)?;
+
                 if !closed && !conn.request.buffer.is_empty() && conn.write_buffer.is_empty() {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
@@ -313,7 +330,7 @@ impl Server {
     }
 
     fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<()> {
-        println!("### start processing a request ###");
+        // dbg!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(conn) {
                 Ok(()) => {
@@ -375,10 +392,10 @@ impl Server {
         }
 
         if conn.request.state != ParsingState::Complete {
-            println!(
-                "Request is still partial (State: {:?}). Waiting for more data...",
-                conn.request.state
-            );
+            // println!(
+            //     "Request is still partial (State: {:?}). Waiting for more data...",
+            //     conn.request.state
+            // );
         }
 
         if !conn.write_buffer.is_empty() {
@@ -435,142 +452,6 @@ impl Server {
             },
         }
     }
-
-    pub fn handle_post(
-        request: &HttpRequest,
-        r_cfg: &RouteConfig,
-        s_cfg: &Arc<ServerConfig>,
-    ) -> HttpResponse {
-        if r_cfg.upload_dir.is_empty() {
-            Self::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(s_cfg))
-        } else {
-            // Self::handle_upload(request, r_cfg, s_cfg)
-            todo!("jj")
-        }
-    }
-
-    // pub fn handle_upload(
-    //     req: &HttpRequest,
-    //     r_cfg: &RouteConfig,
-    //     s_cfg: &Arc<ServerConfig>,
-    // ) -> HttpResponse {
-    //     let content_type = req
-    //         .headers
-    //         .get("content-type")
-    //         .map(|s| s.as_str())
-    //         .unwrap_or("");
-
-    //     let boundary = content_type
-    //         .split("boundary=")
-    //         .nth(1)
-    //         .map(|b| b.trim())
-    //         .unwrap_or("");
-
-    //     let r_root = std::path::Path::new(&r_cfg.root);
-    //     let upload_path = r_root.join(&r_cfg.upload_dir);
-
-    //     if !boundary.is_empty() {
-    //         let mut saved_filenames = Vec::new();
-    //         let boundary_str = format!("--{}", boundary);
-    //         let boundary_bytes = boundary_str.as_bytes();
-    //         let mut current_pos = 0;
-    //         let mut files_saved = 0;
-
-    //         while let Some(start_idx) = find_subsequence(&req.body, boundary_bytes, current_pos) {
-    //             let part_start = start_idx + boundary_bytes.len() + 2;
-
-    //             if req.body.get(part_start - 2..part_start) == Some(b"--")
-    //                 || part_start >= req.body.len()
-    //             {
-    //                 break;
-    //             }
-
-    //             let header_sep = b"\r\n\r\n";
-    //             let data_start = match find_subsequence(&req.body, header_sep, part_start) {
-    //                 Some(idx) => idx + 4,
-    //                 None => break,
-    //             };
-
-    //             let next_boundary_idx =
-    //                 match find_subsequence(&req.body, boundary_bytes, data_start) {
-    //                     Some(idx) => idx,
-    //                     None => break,
-    //                 };
-
-    //             let data_end = next_boundary_idx - 2;
-    //             let file_data = &req.body[data_start..data_end];
-
-    //             let headers_part = String::from_utf8_lossy(&req.body[part_start..data_start]);
-    //             let part_info = parse_part_headers(&headers_part);
-    //             if let Some(raw_fname) = part_info.filename {
-    //                 let mut clean_name;
-    //                 if raw_fname.is_empty() {
-    //                     clean_name = req.extract_filename();
-    //                     clean_name
-    //                         .push_str(Self::get_ext_from_content_type(&part_info.content_type));
-    //                 } else {
-    //                     clean_name = sanitize_filename(&raw_fname);
-    //                 }
-
-    //                 let final_path = get_unique_path(&upload_path, &clean_name);
-    //                 let actual_name = final_path
-    //                     .file_name()
-    //                     .unwrap()
-    //                     .to_string_lossy()
-    //                     .into_owned();
-
-    //                 if fs::write(final_path, file_data).is_ok() {
-    //                     files_saved += 1;
-    //                     saved_filenames.push(actual_name);
-    //                 }
-    //             }
-
-    //             // Move cursor to the next boundary for the next loop iteration
-    //             current_pos = next_boundary_idx;
-    //         }
-
-    //         if files_saved > 0 {
-    //             let mut res = HttpResponse::new(HTTP_CREATED, "Created");
-    //             if files_saved == 1 {
-    //                 res.headers.insert(
-    //                     "location".to_string(),
-    //                     format!("/upload/{}", saved_filenames[0]),
-    //                 );
-    //                 return res.set_body(
-    //                     format!("File saved as {}", saved_filenames[0]).into_bytes(),
-    //                     "text/plain",
-    //                 );
-    //             }
-    //             let body_msg = format!("Saved files: {}", saved_filenames.join(", "));
-    //             return res.set_body(body_msg.into_bytes(), "text/plain");
-    //         }
-    //         return Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
-    //     }
-
-    //     let mut file_name = req.extract_filename();
-    //     file_name.push_str(Self::get_ext_from_content_type(
-    //         req.headers.get("content-type").map_or("", |v| v),
-    //     ));
-
-    //     let full_path = upload_path.join(&file_name);
-
-    //     let res = match File::create(&full_path) {
-    //         Ok(mut file) => match file.write_all(&req.body) {
-    //             Ok(_) => HttpResponse::new(HTTP_CREATED, "Created")
-    //                 .set_header("Location", &format!("/upload/{}", file_name))
-    //                 .set_body(
-    //                     format!("File saved as {}", file_name).into_bytes(),
-    //                     "text/plain",
-    //                 ),
-    //             Err(_) => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
-    //         },
-    //         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-    //             Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg))
-    //         }
-    //         Err(_) => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
-    //     };
-    //     res
-    // }
 
     pub fn handle_delete(
         request: &HttpRequest,
@@ -768,7 +649,10 @@ impl Upload {
 
         match OpenOptions::new().create(true).append(true).open(full_path) {
             Ok(mut file) => match file.write_all(chunk) {
-                Ok(_) => {}
+                Ok(_) => {
+                    self.saved_filenames.push(file_name);
+                    self.files_saved += 1;
+                }
                 Err(_) => {
                     self.state = UploadState::Error(HTTP_INTERNAL_SERVER_ERROR);
                 }
@@ -783,12 +667,6 @@ impl Upload {
     }
 
     pub fn handle_upload_3(&mut self, req: &HttpRequest, chunk: &[u8]) {
-        let content_type = req
-            .headers
-            .get("content-type")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-
         self.buffer.extend_from_slice(chunk);
 
         let boundary_str = format!("--{}", self.boundary);
@@ -845,7 +723,6 @@ impl Upload {
                         find_subsequence(&self.buffer, boundary_bytes, data_start)
                     {
                         let data_end = next_boundary_idx - 2; // Subtract \r\n
-
                         if self.part_info.filename.is_some() {
                             self.save_file_part(req, data_start, data_end);
                         }
@@ -855,7 +732,7 @@ impl Upload {
                         self.current_pos = 0;
                         self.multi_part_state = MultiPartState::Start;
                     } else {
-                        self.flush_partial_data();
+                        self.flush_partial_data(req);
                         break;
                     }
                 }
@@ -863,40 +740,55 @@ impl Upload {
         }
     }
 
-    fn flush_partial_data(&mut self) {
+    fn flush_partial_data(&mut self, req: &HttpRequest) {
         let boundary_len = self.boundary.len() + 6; // --boundary\r\n
 
-        // Only flush if we have more than the boundary length
         if self.buffer.len() > boundary_len {
             let write_end = self.buffer.len() - boundary_len;
             let data_to_write = &self.buffer[..write_end];
 
-            // We need to keep track of the "current" file path in your struct
-            if let Some(current_path) = self.get_current_part_path() {
-                if let Ok(mut file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(current_path)
-                {
-                    let _ = file.write_all(data_to_write);
-                }
+            let target_path = if let Some(ref path) = self.current_file_path {
+                path.clone()
+            } else {
+                let path = self
+                    .get_current_part_path(req)
+                    .unwrap_or_else(|| PathBuf::from("tmp_upload"));
+                let unique =
+                    get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
+                self.current_file_path = Some(unique.clone());
+                unique
+            };
+
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&target_path)
+            {
+                let _ = file.write_all(data_to_write);
             }
 
-            // Remove the written data from the buffer
             self.buffer.drain(..write_end);
-            // Reset current_pos to 0 because the buffer has shifted
             self.current_pos = 0;
         }
     }
 
-    fn get_current_part_path(&self) -> Option<PathBuf> {
+    fn get_current_part_path(&self, req: &HttpRequest) -> Option<PathBuf> {
         // Use the part_info to generate the path, similar to your save_file_part logic
         if self.part_info.filename.is_none() {
             return None;
         }
 
-        let raw_fname = self.part_info.filename.as_ref().unwrap();
-        let clean_name = sanitize_filename(raw_fname);
+        let raw_fname = self.part_info.filename.as_deref().unwrap_or("");
+        let clean_name = if raw_fname.is_empty() {
+            let mut n = req.extract_filename();
+            n.push_str(Server::get_ext_from_content_type(
+                &self.part_info.content_type,
+            ));
+            n
+        } else {
+            sanitize_filename(raw_fname)
+        };
+
         Some(self.path.join(clean_name))
     }
 
@@ -911,18 +803,22 @@ impl Upload {
 
     fn save_file_part(&mut self, req: &HttpRequest, data_start: usize, data_end: usize) {
         let data = &self.buffer[data_start..data_end];
-        let raw_fname = self.part_info.filename.as_deref().unwrap_or("");
-        let clean_name = if raw_fname.is_empty() {
-            let mut n = req.extract_filename();
-            n.push_str(Server::get_ext_from_content_type(
-                &self.part_info.content_type,
-            ));
-            n
+        let final_path = if let Some(path) = self.current_file_path.take() {
+            path
         } else {
-            sanitize_filename(raw_fname)
+            let raw_fname = self.part_info.filename.as_deref().unwrap_or("");
+            let clean_name = if raw_fname.is_empty() {
+                let mut n = req.extract_filename();
+                n.push_str(Server::get_ext_from_content_type(
+                    &self.part_info.content_type,
+                ));
+                n
+            } else {
+                sanitize_filename(raw_fname)
+            };
+            get_unique_path(&self.path, &clean_name)
         };
 
-        let final_path = get_unique_path(&self.path, &clean_name);
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
@@ -939,6 +835,8 @@ impl Upload {
                 );
             }
         }
+
+        self.current_file_path = None;
     }
 }
 
