@@ -169,15 +169,13 @@ impl HttpRequest {
         self.clear();
     }
 
-    pub fn parse_request<'a>(
-        conn: &mut HttpConnection,
-    ) -> core::result::Result<(), ParseError> {
+    pub fn parse_request<'a>(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
         loop {
             let res = match conn.request.state {
                 ParsingState::RequestLine => conn.request.parse_request_line(),
                 ParsingState::Headers => HttpRequest::parse_headers(conn),
                 ParsingState::HeadersDone => {
-                    if let Some(res) = HttpRequest::setup_action(conn) {
+                    if let Some(res) = HttpRequest::setup_action(conn)? {
                         ///// dddddddddd
                         conn.write_buffer.extend_from_slice(&res.to_bytes());
                         conn.request.state = ParsingState::Complete;
@@ -214,7 +212,9 @@ impl HttpRequest {
         Ok(())
     }
 
-    pub fn setup_action(conn: &mut HttpConnection) -> Option<HttpResponse> {
+    pub fn setup_action(
+        conn: &mut HttpConnection,
+    ) -> core::result::Result<Option<HttpResponse>, ParseError> {
         let s_cfg = conn.resolve_config();
         conn.s_cfg = Some(Arc::clone(&s_cfg));
 
@@ -239,7 +239,6 @@ impl HttpRequest {
             .map(|s| s.as_str())
             .unwrap_or("");
 
-
         conn.boundary = content_type
             .split("boundary=")
             .nth(1)
@@ -249,7 +248,9 @@ impl HttpRequest {
 
         // 1. Initial Size Check
         if !is_chunked && content_length > s_cfg.client_max_body_size {
-            return Some(Server::handle_error(413, Some(&s_cfg)));
+            dbg!("gggggggggggggggggggggggggggggggg");
+            return Err(ParseError::PayloadTooLarge);
+            // return Some(Server::handle_error(413, Some(&s_cfg)));
         }
 
         conn.body_remaining = content_length;
@@ -276,8 +277,6 @@ impl HttpRequest {
                         Method::POST => {
                             // Decide if we will upload to a file
                             if !r_cfg.upload_dir.is_empty() {
-
-        dbg!(content_length);
                                 let path = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
                                 conn.action = Some(ActiveAction::Upload(path));
                                 None
@@ -302,19 +301,18 @@ impl HttpRequest {
             } else if content_length > 0 {
                 conn.request.state = ParsingState::Body(content_length, s_cfg.client_max_body_size);
             } else {
-                conn.request.state = ParsingState::Complete;
+                return Ok(Some(HttpResponse::new(400, "Bad Request").set_body(
+                    b"Error: No file data provided.".to_vec(),
+                    "text/plain",
+                )));
             }
         }
 
-        res
+        Ok(res)
     }
 
     fn parse_request_line(&mut self) -> core::result::Result<(), ParseError> {
-        
         if let Some(abs_index) = find_crlf(&self.buffer, self.cursor) {
-            dbg!("parse_request_line");
-            // let abs_index = self.cursor + index;
-
             let line_bytes = &self.buffer[self.cursor..abs_index];
             let request_line =
                 std::str::from_utf8(line_bytes).map_err(|_| ParseError::MalformedRequestLine)?;
@@ -384,7 +382,7 @@ impl HttpRequest {
         if let Some(s_cfg) = &conn.s_cfg {
             let available = conn.request.buffer.len() - conn.request.cursor;
             let to_process = std::cmp::min(available, conn.body_remaining);
-            let cursor = conn.request.cursor;
+            // let cursor = conn.request.cursor;
 
             if to_process > 0 {
                 let start = conn.request.cursor;
@@ -392,14 +390,13 @@ impl HttpRequest {
 
                 // HttpRequest::execute_active_action(conn, start, to_process)?;
 
-
                 HttpRequest::execute_active_action(
                     &conn.request,
                     &mut conn.upload_manager,
                     &conn.action,
-                    cursor,
+                    start,
                     to_process,
-                    &conn.boundary
+                    &conn.boundary,
                 )?;
 
                 conn.body_remaining -= to_process;
@@ -420,7 +417,6 @@ impl HttpRequest {
         &mut self,
         max_body_size: usize,
     ) -> core::result::Result<bool, ParseError> {
-        
         loop {
             let current_slice = &self.buffer[self.cursor..];
 
@@ -462,7 +458,7 @@ impl HttpRequest {
         action: &Option<ActiveAction>,
         start: usize,
         to_process: usize,
-        boundary: &str
+        boundary: &str,
     ) -> Result<(), ParseError> {
         let chunk = &request.buffer[start..start + to_process];
         match &action {
@@ -474,15 +470,9 @@ impl HttpRequest {
 
                 if let Some(mgr) = upload_manager {
                     if !boundary.is_empty() {
-                        mgr.handle_upload_3(
-                            &request,
-                            chunk,
-                        );
+                        mgr.handle_upload_3(&request, chunk);
                     } else {
-                        mgr.handle_upload_2(
-                            &request,
-                            chunk,
-                        );
+                        mgr.handle_upload_2(&request, chunk);
                     }
                     if let UploadState::Error(code) = mgr.state {
                         return Err(ParseError::Error(code));
@@ -649,6 +639,3 @@ pub fn parse_part_headers(headers: &str) -> PartInfo {
     }
     info
 }
-
-
-

@@ -1,7 +1,6 @@
 use crate::config::{AppConfig, RouteConfig, ServerConfig};
 use crate::error::Result;
 use crate::http::*;
-use crate::router::RoutingError;
 use mio::{
     Events, Interest, Poll, Token,
     event::Event,
@@ -9,11 +8,13 @@ use mio::{
 };
 use proxy_log::info;
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 
 pub const READ_BUF_SIZE: usize = 4096;
 // 4xx Client Errors
@@ -43,6 +44,7 @@ pub struct HttpConnection {
     pub total_body_read: usize,
     pub body_remaining: usize,
     pub boundary: String,
+    pub closed: bool,
 }
 
 #[derive(Debug)]
@@ -81,8 +83,6 @@ pub struct Upload {
     pub state: UploadState,
     pub multi_part_state: MultiPartState,
     pub path: PathBuf,
-
-    // new fields
     pub boundary: String,
     pub buffer: Vec<u8>,
     pub current_pos: usize,
@@ -112,6 +112,7 @@ impl HttpConnection {
             total_body_read: 0,
             body_remaining: 0,
             boundary: String::new(),
+            closed: false,
         }
     }
 
@@ -126,7 +127,7 @@ impl HttpConnection {
             }
         }
 
-        // If no match found, find the default_server, or fallback to the first one
+        //  default_server
         for config in &self.config_list {
             if config.default_server {
                 return Arc::clone(config);
@@ -274,70 +275,110 @@ impl Server {
     }
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
-        let mut closed = false;
+        
 
         if let Some(conn) = self.connections.get_mut(&token) {
-            if event.is_readable() {
+            // let mut cl = false;
+            if !conn.closed && event.is_readable() {
                 match conn.read_data() {
-                    Ok(is_eof) => closed = is_eof,
+                    Ok(is_eof) => conn.closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
                         let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                         conn.write_buffer.extend_from_slice(error_res.as_bytes());
+                        conn.closed = true;
+                        dbg!("ggggggggggggggggggggggggg");
                         // Change interest to writable to send the error before closing
                         poll.registry()
                             .reregister(&mut conn.stream, token, Interest::WRITABLE)?;
                         return Ok(());
                     }
-                    Err(_) => closed = true,
+                    Err(_) => conn.closed = true,
                 };
 
                 poll.registry()
                     .reregister(&mut conn.stream, token, Interest::READABLE)?;
 
-                if !closed && !conn.request.buffer.is_empty() && conn.write_buffer.is_empty() {
+                if !conn.closed && !conn.request.buffer.is_empty() && conn.write_buffer.is_empty() {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
 
-                    Self::proces_request(poll, token, conn)?;
+                    conn.closed = Self::proces_request(poll, token, conn)?;
                 }
             }
 
-            if !closed && event.is_writable() && !conn.write_buffer.is_empty() {
-                closed = conn.write_data();
-                if !closed && conn.write_buffer.is_empty() {
+            // if !conn.closed && event.is_writable() && !conn.write_buffer.is_empty() {
+            //     conn.closed = conn.write_data();
+            //     if !conn.closed && conn.write_buffer.is_empty() {
+            //         poll.registry()
+            //             .reregister(&mut conn.stream, token, Interest::READABLE)?;
+            //         dbg!(conn.closed);
+            //         if !conn.request.buffer.is_empty()
+            //             && conn.request.state == ParsingState::RequestLine
+            //             && !conn.closed
+            //         {
+            //             println!(
+            //                 "Write finished. Found leftover data in buffer, processing next request..."
+            //             );
+            //             conn.closed = Self::proces_request(poll, token, conn)?;
+            //         }
+            //     }
+            // }
+            dbg!(conn.write_buffer.len());
+
+            dbg!(conn.closed);
+            dbg!(event.is_writable());
+            if event.is_writable() && !conn.write_buffer.is_empty() {
+                conn.closed = conn.write_data() || conn.closed ;
+                if !conn.closed && conn.write_buffer.is_empty() {
                     poll.registry()
                         .reregister(&mut conn.stream, token, Interest::READABLE)?;
-
+                    
                     if !conn.request.buffer.is_empty()
                         && conn.request.state == ParsingState::RequestLine
                     {
                         println!(
                             "Write finished. Found leftover data in buffer, processing next request..."
                         );
-                        Self::proces_request(poll, token, conn)?;
+                        conn.closed = Self::proces_request(poll, token, conn)?;
                     }
                 }
             }
-
-            if closed {
+            dbg!(conn.write_buffer.len());
+            if conn.closed && conn.write_buffer.is_empty() {
+                conn.stream.shutdown(std::net::Shutdown::Write)?;
                 // Borrow ends here, so we can remove safely below
             } else {
                 return Ok(()); // Keep connection alive
             }
         }
+        println!("remove connection");
         self.connections.remove(&token);
         Ok(())
     }
 
-    fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<()> {
-        // dbg!("### start processing a request ###");
+    fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<bool> {
+        let mut closed = false;
+        dbg!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(conn) {
                 Ok(()) => {
                     if conn.request.state == ParsingState::Complete {
+                        println!("complete");
                         let s_cfg = conn.s_cfg.as_ref().unwrap();
 
-                        if let Some(upload_manager) = &conn.upload_manager {
+                        if let Some(upload_manager) = &mut conn.upload_manager {
+                            if upload_manager.boundary.is_empty() {
+                                if let Some(target_path) = &upload_manager.current_file_path {
+                                    upload_manager.saved_filenames.push(
+                                        target_path
+                                            .file_name()
+                                            .unwrap()
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    );
+                                    upload_manager.files_saved += 1;
+                                }
+                            }
                             let response = if upload_manager.saved_filenames.len() > 0 {
                                 let mut res = HttpResponse::new(HTTP_CREATED, "Created");
                                 if upload_manager.saved_filenames.len() == 1 {
@@ -365,8 +406,10 @@ impl Server {
                             };
 
                             conn.write_buffer.extend_from_slice(&response.to_bytes());
-                            conn.request.finish_request();
                         }
+                        dbg!("hhhhhhhhhhhhhhhh");
+                        conn.request.finish_request();
+                        // conn.request.buffer.clear();
 
                         // if conn.request.buffer.is_empty() {
                         break;
@@ -384,6 +427,7 @@ impl Server {
                         _ => HTTP_BAD_REQUEST,
                     };
                     let response = Self::handle_error(code, conn.s_cfg.as_ref());
+                    closed = true;
                     conn.write_buffer.extend_from_slice(&response.to_bytes());
                     conn.request.finish_request();
                     break;
@@ -405,7 +449,8 @@ impl Server {
                 Interest::READABLE | Interest::WRITABLE,
             )?;
         }
-        Ok(())
+        dbg!(closed);
+        Ok(closed)
     }
 
     pub fn handle_cgi(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
@@ -569,13 +614,33 @@ impl Server {
                 let s_root = std::path::Path::new(&cfg.root);
                 let err_path = s_root.join(path_str.trim_start_matches('/'));
                 if let Ok(content) = fs::read(err_path) {
-                    return HttpResponse::new(code, status_text).set_body(content, "text/html");
+                    let mut res =
+                        HttpResponse::new(code, status_text).set_body(content, "text/html");
+
+                    if code >= 400 && code != 404 && code != 405 {
+                        res.headers
+                            .insert("connection".to_string(), "close".to_string());
+                    } else {
+                        res.headers
+                            .insert("connection".to_string(), "keep-alive".to_string());
+                    }
+
+                    return res;
                 }
             }
         }
 
+        let mut res = HttpResponse::new(code, status_text);
+
         let body = format!("{} {}", code, status_text).into_bytes();
-        HttpResponse::new(code, status_text).set_body(body, "text/plain")
+        if code >= 400 && code != 404 && code != 405 {
+            res.headers
+                .insert("connection".to_string(), "close".to_string());
+        } else {
+            res.headers
+                .insert("connection".to_string(), "keep-alive".to_string());
+        }
+        res.set_body(body, "text/plain")
     }
 }
 
@@ -638,21 +703,26 @@ fn get_unique_path(directory: &PathBuf, filename: &str) -> PathBuf {
 
 impl Upload {
     pub fn handle_upload_2(&mut self, req: &HttpRequest, chunk: &[u8]) {
-        let upload_path = &self.path;
+        let target_path = if let Some(ref path) = self.current_file_path {
+            path.clone()
+        } else {
+            let upload_path = &self.path;
+            let mut file_name = req.extract_filename();
+            file_name.push_str(Server::get_ext_from_content_type(
+                req.headers.get("content-type").map_or("", |v| v),
+            ));
+            let full_path = upload_path.join(&file_name);
+            self.current_file_path = Some(full_path.clone());
+            full_path
+        };
 
-        let mut file_name = req.extract_filename();
-        file_name.push_str(Server::get_ext_from_content_type(
-            req.headers.get("content-type").map_or("", |v| v),
-        ));
-
-        let full_path = upload_path.join(&file_name);
-
-        match OpenOptions::new().create(true).append(true).open(full_path) {
+        match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target_path)
+        {
             Ok(mut file) => match file.write_all(chunk) {
-                Ok(_) => {
-                    self.saved_filenames.push(file_name);
-                    self.files_saved += 1;
-                }
+                Ok(_) => {}
                 Err(_) => {
                     self.state = UploadState::Error(HTTP_INTERNAL_SERVER_ERROR);
                 }
