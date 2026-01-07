@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const READ_BUF_SIZE: usize = 4096;
 // 4xx Client Errors
@@ -45,6 +45,7 @@ pub struct HttpConnection {
     pub body_remaining: usize,
     pub boundary: String,
     pub closed: bool,
+    pub linger_until: Option<Instant>
 }
 
 #[derive(Debug)]
@@ -113,6 +114,7 @@ impl HttpConnection {
             body_remaining: 0,
             boundary: String::new(),
             closed: false,
+            linger_until: None
         }
     }
 
@@ -232,8 +234,16 @@ impl Server {
         );
 
         loop {
+            let timeout = self
+                .connections
+                .values()
+                .filter_map(|c| c.linger_until)
+                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+                .min()
+                .or(Some(std::time::Duration::from_millis(100)));
+
             // Wait for events
-            poll.poll(&mut events, None)?;
+            poll.poll(&mut events, timeout)?;
 
             for event in events.iter() {
                 let token = event.token();
@@ -251,6 +261,15 @@ impl Server {
                     self.connections.remove(&token);
                 }
             }
+
+            self.connections.retain(|_, conn| {
+                if let Some(deadline) = conn.linger_until {
+                    return std::time::Instant::now() < deadline;
+                }
+                true
+            });
+
+            println!("hhhhhhhhhhhhhhh");
         }
     }
 
@@ -275,11 +294,11 @@ impl Server {
     }
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
-        
-
         if let Some(conn) = self.connections.get_mut(&token) {
             // let mut cl = false;
+            dbg!(event.is_readable());
             if !conn.closed && event.is_readable() {
+                dbg!("hh");
                 match conn.read_data() {
                     Ok(is_eof) => conn.closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
@@ -328,11 +347,12 @@ impl Server {
             dbg!(conn.closed);
             dbg!(event.is_writable());
             if event.is_writable() && !conn.write_buffer.is_empty() {
-                conn.closed = conn.write_data() || conn.closed ;
+                let prev_closed = conn.closed;
+                conn.closed = conn.write_data() || conn.closed;
                 if !conn.closed && conn.write_buffer.is_empty() {
                     poll.registry()
                         .reregister(&mut conn.stream, token, Interest::READABLE)?;
-                    
+
                     if !conn.request.buffer.is_empty()
                         && conn.request.state == ParsingState::RequestLine
                     {
@@ -345,14 +365,17 @@ impl Server {
             }
             dbg!(conn.write_buffer.len());
             if conn.closed && conn.write_buffer.is_empty() {
-                conn.stream.shutdown(std::net::Shutdown::Write)?;
                 // Borrow ends here, so we can remove safely below
+                poll.registry().deregister(&mut conn.stream)?;
+                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
+
+                conn.linger_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(10000));
             } else {
                 return Ok(()); // Keep connection alive
             }
         }
         println!("remove connection");
-        self.connections.remove(&token);
+        // self.connections.remove(&token);
         Ok(())
     }
 
