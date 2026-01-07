@@ -4,9 +4,11 @@ mod integration_tests {
     use server_proxy::config::{AppConfig, RouteConfig, ServerConfig};
     use server_proxy::http::Method;
     use server_proxy::server::Server;
+    use std::error::Error;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::path::Path;
+    use std::thread::sleep;
     use std::time::Duration;
     use std::{fs, thread};
 
@@ -183,5 +185,50 @@ mod integration_tests {
         }
 
         let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn test_streaming_chunked_upload() -> Result<(), Box<dyn Error>> {
+        let addr = "127.0.0.1:8080";
+        let mut stream = TcpStream::connect(addr)?;
+        println!("Connected to {}", addr);
+
+        // 1. Send Headers
+        let headers = "POST /upload HTTP/1.1\r\n\
+                   Host: localhost\r\n\
+                   Transfer-Encoding: chunked\r\n\
+                   Content-Type: text/plain\r\n\r\n";
+        stream.write_all(headers.as_bytes())?;
+        stream.flush()?;
+        println!("Headers sent. Sleeping...");
+        sleep(Duration::from_millis(500));
+
+        // 2. Send only the FIRST SIZE line
+        stream.write_all(b"B\r\n")?; // Hex B = 11 bytes
+        stream.flush()?;
+        println!("First chunk size sent. Sleeping (Server is now in ReadData state)...");
+        sleep(Duration::from_millis(500));
+
+        // 3. Send the FIRST DATA
+        stream.write_all(b"Rust Stream")?;
+        stream.write_all(b"\r\n")?; // Trailing CRLF
+        stream.flush()?;
+        println!("First chunk data sent.");
+        sleep(Duration::from_millis(500));
+
+        // 4. Send the TERMINAL chunk (Size 0)
+        // We split the "0\r\n\r\n" to see if the server waits correctly
+        stream.write_all(b"0\r\n")?;
+        stream.flush()?;
+        println!("Terminal size sent. Sleeping before final CRLF...");
+        sleep(Duration::from_millis(500));
+
+        stream.write_all(b"\r\n")?;
+        stream.flush()?;
+        println!("Request finished.");
+
+        // Stay alive for a second to read the response
+        sleep(Duration::from_secs(1));
+        Ok(())
     }
 }

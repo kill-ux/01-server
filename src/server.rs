@@ -151,6 +151,7 @@ impl HttpConnection {
             match self.stream.read(&mut buf) {
                 Ok(0) => return Ok(true), // EOF
                 Ok(n) => {
+                    
                     // let absolute_limit: usize = 16_384;
                     // if self.request.buffer.len() + n > absolute_limit {
                     //     return Err(ParseError::PayloadTooLarge);
@@ -234,16 +235,16 @@ impl Server {
         );
 
         loop {
-            let timeout = self
-                .connections
-                .values()
-                .filter_map(|c| c.linger_until)
-                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
-                .min()
-                .or(Some(std::time::Duration::from_millis(100)));
+            // let timeout = self
+            //     .connections
+            //     .values()
+            //     .filter_map(|c| c.linger_until)
+            //     .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+            //     .min()
+            //     .or(Some(std::time::Duration::from_millis(100)));
 
             // Wait for events
-            poll.poll(&mut events, timeout)?;
+            poll.poll(&mut events, None)?;
 
             for event in events.iter() {
                 let token = event.token();
@@ -262,14 +263,14 @@ impl Server {
                 }
             }
 
-            self.connections.retain(|_, conn| {
-                if let Some(deadline) = conn.linger_until {
-                    return std::time::Instant::now() < deadline;
-                }
-                true
-            });
+            // self.connections.retain(|_, conn| {
+            //     if let Some(deadline) = conn.linger_until {
+            //         return std::time::Instant::now() < deadline;
+            //     }
+            //     true
+            // });
 
-            println!("hhhhhhhhhhhhhhh");
+            // println!("hhhhhhhhhhhhhhh");
         }
     }
 
@@ -295,18 +296,13 @@ impl Server {
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&token) {
-            // let mut cl = false;
-            dbg!(event.is_readable());
             if !conn.closed && event.is_readable() {
-                dbg!("hh");
                 match conn.read_data() {
                     Ok(is_eof) => conn.closed = is_eof,
                     Err(ParseError::PayloadTooLarge) => {
                         let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                         conn.write_buffer.extend_from_slice(error_res.as_bytes());
                         conn.closed = true;
-                        dbg!("ggggggggggggggggggggggggg");
-                        // Change interest to writable to send the error before closing
                         poll.registry()
                             .reregister(&mut conn.stream, token, Interest::WRITABLE)?;
                         return Ok(());
@@ -325,29 +321,7 @@ impl Server {
                 }
             }
 
-            // if !conn.closed && event.is_writable() && !conn.write_buffer.is_empty() {
-            //     conn.closed = conn.write_data();
-            //     if !conn.closed && conn.write_buffer.is_empty() {
-            //         poll.registry()
-            //             .reregister(&mut conn.stream, token, Interest::READABLE)?;
-            //         dbg!(conn.closed);
-            //         if !conn.request.buffer.is_empty()
-            //             && conn.request.state == ParsingState::RequestLine
-            //             && !conn.closed
-            //         {
-            //             println!(
-            //                 "Write finished. Found leftover data in buffer, processing next request..."
-            //             );
-            //             conn.closed = Self::proces_request(poll, token, conn)?;
-            //         }
-            //     }
-            // }
-            dbg!(conn.write_buffer.len());
-
-            dbg!(conn.closed);
-            dbg!(event.is_writable());
             if event.is_writable() && !conn.write_buffer.is_empty() {
-                let prev_closed = conn.closed;
                 conn.closed = conn.write_data() || conn.closed;
                 if !conn.closed && conn.write_buffer.is_empty() {
                     poll.registry()
@@ -363,19 +337,16 @@ impl Server {
                     }
                 }
             }
-            dbg!(conn.write_buffer.len());
             if conn.closed && conn.write_buffer.is_empty() {
                 // Borrow ends here, so we can remove safely below
-                poll.registry().deregister(&mut conn.stream)?;
-                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
 
-                conn.linger_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(10000));
+                // conn.linger_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(10000));
             } else {
                 return Ok(()); // Keep connection alive
             }
         }
         println!("remove connection");
-        // self.connections.remove(&token);
+        self.connections.remove(&token);
         Ok(())
     }
 
@@ -472,7 +443,6 @@ impl Server {
                 Interest::READABLE | Interest::WRITABLE,
             )?;
         }
-        dbg!(closed);
         Ok(closed)
     }
 

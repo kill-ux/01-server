@@ -89,6 +89,7 @@ pub enum ParseError {
     TooManyHeaders,
     InvalidHeaderName,
     InvalidHeaderValue,
+    InvalidChunkSize,
     PayloadTooLarge,
     ParseHexError,
     Error(u16),
@@ -109,6 +110,7 @@ impl fmt::Display for ParseError {
             ParseError::PayloadTooLarge => write!(f, "Payload too large"),
             ParseError::ParseHexError => write!(f, "Parse Hex Error"),
             ParseError::Error(_) => write!(f, "other error"),
+            ParseError::InvalidChunkSize => write!(f, "invalid chunk size"),
         }
     }
 }
@@ -119,6 +121,12 @@ impl From<std::string::FromUtf8Error> for ParseError {
     fn from(err: std::string::FromUtf8Error) -> Self {
         ParseError::InvalidUtf8(err)
     }
+}
+
+#[derive(Debug)]
+pub enum ChunkState {
+    ReadSize,
+    ReadData(usize),
 }
 
 #[derive(Debug)]
@@ -133,6 +141,7 @@ pub struct HttpRequest {
     pub buffer: Vec<u8>,
     pub cursor: usize,
     pub state: ParsingState,
+    pub chunk_state: ChunkState,
 }
 
 impl Default for HttpRequest {
@@ -154,6 +163,7 @@ impl HttpRequest {
             state: ParsingState::RequestLine,
             is_large_body: false,
             body_file: None,
+            chunk_state: ChunkState::ReadSize,
         }
     }
 
@@ -183,16 +193,18 @@ impl HttpRequest {
                     Ok(())
                 }
                 ParsingState::Body(cl, max) => HttpRequest::parse_unchunked_body(conn, cl),
-                ParsingState::ChunkedBody(max) => match conn.request.parse_chunked_body(max) {
-                    Ok(true) => {
-                        conn.request.state = ParsingState::Complete;
-                        Ok(())
+                ParsingState::ChunkedBody(max) => {
+                    match HttpRequest::parse_chunked_body(conn, max) {
+                        Ok(true) => {
+                            conn.request.state = ParsingState::Complete;
+                            Ok(())
+                        }
+                        Ok(false) => {
+                            return Err(ParseError::IncompleteRequestLine);
+                        }
+                        Err(e) => Err(e),
                     }
-                    Ok(false) => {
-                        return Err(ParseError::IncompleteRequestLine);
-                    }
-                    Err(e) => Err(e),
-                },
+                }
                 ParsingState::Complete => break,
                 ParsingState::Error => break,
             };
@@ -368,7 +380,10 @@ impl HttpRequest {
             match headers_option {
                 Some((k, v)) => conn.request.headers.insert(k, v),
                 None => {
+                    conn.request.buffer.drain(..conn.request.cursor);
+                    conn.request.cursor = 0;
                     conn.request.state = ParsingState::HeadersDone;
+
                     return Ok(());
                 }
             };
@@ -414,40 +429,93 @@ impl HttpRequest {
     }
 
     pub fn parse_chunked_body(
-        &mut self,
-        max_body_size: usize,
+        conn: &mut HttpConnection,
+        client_max_body: usize,
     ) -> core::result::Result<bool, ParseError> {
+        dbg!("sssssssss");
         loop {
-            let current_slice = &self.buffer[self.cursor..];
-
-            match find_subsequence(current_slice, b"\r\n", 0) {
-                Some(line_end) => {
-                    let hex_str = String::from_utf8_lossy(&current_slice[..line_end]);
-                    let chunk_size = usize::from_str_radix(hex_str.trim(), 16)
-                        .map_err(|_| ParseError::ParseHexError)?;
-
-                    let total_chunk_needed = line_end + 2 + chunk_size + 2;
-                    if current_slice.len() < total_chunk_needed {
-                        return Ok(false); // Wait for more data
+            match conn.request.chunk_state {
+                ChunkState::ReadSize => {
+                    // MOVE THIS INSIDE: recalculate every time we look for a new size
+                    let current_len = conn.request.buffer.len();
+                    if current_len == 0 {
+                        return Ok(false);
                     }
 
-                    if chunk_size == 0 {
-                        self.cursor += total_chunk_needed;
-                        return Ok(true); // Chunked body finished!
+                    let search_limit = std::cmp::min(current_len, 18);
+
+                    dbg!(&search_limit);
+
+                    match find_subsequence(&conn.request.buffer[..search_limit], b"\r\n", 0) {
+                        Some(line_end) => {
+                            dbg!(line_end);
+                            let hex_str = String::from_utf8_lossy(&conn.request.buffer[..line_end]);
+                            let chunk_size = usize::from_str_radix(hex_str.trim(), 16)
+                                .map_err(|_| ParseError::ParseHexError)?;
+
+                            if conn.total_body_read + chunk_size > client_max_body {
+                                return Err(ParseError::PayloadTooLarge);
+                            }
+
+                            if chunk_size == 0 {
+                                if conn.request.buffer.len() < line_end + 4 {
+                                    return Ok(false);
+                                }
+                                conn.request.buffer.drain(..line_end + 4);
+                                return Ok(true);
+                            }
+
+                            conn.request.chunk_state = ChunkState::ReadData(chunk_size);
+                            conn.request.buffer.drain(..line_end + 2);
+                        }
+                        None => {
+                            dbg!(current_len);
+                            // If we have 18 bytes and still no \r\n, the client is sending garbage
+                            if current_len >= 18 {
+                                return Err(ParseError::ParseHexError);
+                            }
+                            return Ok(false);
+                        }
                     }
-
-                    if self.body.len() + chunk_size > max_body_size {
-                        return Err(ParseError::PayloadTooLarge);
-                    }
-
-                    let data_start = self.cursor + line_end + 2;
-                    self.body
-                        .extend_from_slice(&self.buffer[data_start..data_start + chunk_size]);
-
-                    // 4. Move cursor past everything (size\r\n + data + \r\n)
-                    self.cursor += total_chunk_needed;
                 }
-                None => return Ok(false),
+                ChunkState::ReadData(remaining_size) => {
+                    if conn.request.buffer.is_empty() {
+                        return Ok(false);
+                    }
+
+                    let available = conn.request.buffer.len();
+                    let to_read = std::cmp::min(available, remaining_size);
+
+                    if to_read > 0 {
+                        // Note: Always use index 0 because we drain the buffer as we go
+                        HttpRequest::execute_active_action(
+                            &conn.request,
+                            &mut conn.upload_manager,
+                            &conn.action,
+                            0, // Buffer start is now always 0
+                            to_read,
+                            &conn.boundary,
+                        )?;
+
+                        conn.total_body_read += to_read;
+                        let new_remaining = remaining_size - to_read;
+
+                        if new_remaining == 0 {
+                            // Check if we have the trailing \r\n
+                            if conn.request.buffer.len() < to_read + 2 {
+                                conn.request.buffer.drain(..to_read);
+                                conn.request.chunk_state = ChunkState::ReadData(0);
+                                return Ok(false);
+                            }
+                            conn.request.buffer.drain(..to_read + 2);
+                            conn.request.chunk_state = ChunkState::ReadSize;
+                        } else {
+                            conn.request.buffer.drain(..to_read);
+                            conn.request.chunk_state = ChunkState::ReadData(new_remaining);
+                            return Ok(false);
+                        }
+                    }
+                }
             }
         }
     }
