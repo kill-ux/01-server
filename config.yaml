@@ -1,5 +1,5 @@
 servers:
-  - host: "127.0.0.1"
+  - host: "10.1.8.6"
     ports: [8080]
     server_name: "myproxy.local"
     default_server: true

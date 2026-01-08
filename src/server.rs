@@ -756,8 +756,6 @@ impl Upload {
                         self.current_pos = part_start;
                         self.multi_part_state = MultiPartState::HeaderSep;
                     } else {
-                        // Clean up buffer: keep only the last boundary_bytes.len()
-                        // in case the boundary is split between this chunk and next.
                         self.trim_buffer();
                         break;
                     }
@@ -803,7 +801,7 @@ impl Upload {
                         self.current_file_path = None; // Reset so next file gets a new name
                         self.multi_part_state = MultiPartState::Start;
                     } else {
-                        self.flush_partial_data(req);
+                        self.flush_partial_data(req, data_start);
                         break;
                     }
                 }
@@ -854,55 +852,36 @@ impl Upload {
     //     }
     // }
 
-    fn flush_partial_data(&mut self, req: &HttpRequest) {
-        // We must keep enough bytes to avoid writing a partial boundary to the file
+    fn flush_partial_data(&mut self, req: &HttpRequest, data_start: usize) {
         let safety_margin = self.boundary.len() + 10;
 
-        if let MultiPartState::NextBoundary(data_start) = self.multi_part_state {
-            if self.buffer.len() > (data_start + safety_margin) {
-                let write_end = self.buffer.len() - safety_margin;
-                let data_to_write = &self.buffer[data_start..write_end];
+        if self.buffer.len() > (data_start + safety_margin) {
+            let write_end = self.buffer.len() - safety_margin;
+            let data_to_write = &self.buffer[data_start..write_end];
 
-                let target_path = if let Some(ref path) = self.current_file_path {
-                    path.clone()
-                } else {
-                    let path = self
-                        .get_current_part_path(req)
-                        .unwrap_or_else(|| PathBuf::from("tmp_upload"));
-                    let unique =
-                        get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
-                    self.current_file_path = Some(unique.clone());
-                    unique
-                };
+            let target_path = if let Some(ref path) = self.current_file_path {
+                path.clone()
+            } else {
+                let path = self
+                    .get_current_part_path(req)
+                    .unwrap_or_else(|| PathBuf::from("tmp_upload"));
+                let unique =
+                    get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
+                self.current_file_path = Some(unique.clone());
+                unique
+            };
 
-                if let Ok(mut file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&target_path)
-                {
-                    let _ = file.write_all(data_to_write);
-
-                    // Track filename for the response
-                    // let fname = target_path
-                    //     .file_name()
-                    //     .unwrap()
-                    //     .to_string_lossy()
-                    //     .into_owned();
-                    // if !self.saved_filenames.contains(&fname) {
-                    //     self.saved_filenames.push(fname);
-                    //     self.files_saved += 1;
-                    // }
-                }
-
-                // DRAIN ONLY THE DATA WRITTEN
-                // This moves the "start of data" back to the current position
-                self.buffer.drain(data_start..write_end);
-
-                // IMPORTANT: Since we drained the data we just read,
-                // the NEW data_start is now exactly where we were.
-                self.multi_part_state = MultiPartState::NextBoundary(data_start);
-                self.current_pos = data_start;
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&target_path)
+            {
+                let _ = file.write_all(data_to_write);
             }
+
+            self.buffer.drain(data_start..write_end);
+            self.multi_part_state = MultiPartState::NextBoundary(data_start);
+            self.current_pos = data_start;
         }
     }
 

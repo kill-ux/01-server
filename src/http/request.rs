@@ -128,6 +128,7 @@ pub enum ChunkState {
     ReadSize,
     ReadData(usize),
     ReadTrailingCRLF,
+    ReadTrailers,
 }
 
 #[derive(Debug)]
@@ -136,6 +137,7 @@ pub struct HttpRequest {
     pub url: String,
     pub version: String,
     pub headers: HashMap<String, String>,
+    pub trailers: HashMap<String, String>,
     pub body: Vec<u8>,
     pub body_file: Option<File>,
     pub is_large_body: bool,
@@ -158,6 +160,7 @@ impl HttpRequest {
             url: String::new(),
             version: String::new(),
             headers: HashMap::new(),
+            trailers: HashMap::new(),
             body: Vec::new(),
             buffer: Vec::with_capacity(4096),
             cursor: 0,
@@ -444,11 +447,12 @@ impl HttpRequest {
 
                                 if chunk_size == 0 {
                                     // Check for the final \r\n after the 0
-                                    if conn.request.buffer.len() < line_end + 4 {
+                                    if conn.request.buffer.len() < line_end + 2 {
                                         return Ok(false);
                                     }
-                                    conn.request.buffer.drain(..line_end + 4);
-                                    return Ok(true); // Entire body finished
+                                    conn.request.buffer.drain(..line_end + 2); // Drain the "0\r\n"
+                                    conn.request.chunk_state = ChunkState::ReadTrailers;
+                                    continue;
                                 }
 
                                 conn.request.chunk_state = ChunkState::ReadData(chunk_size);
@@ -503,6 +507,29 @@ impl HttpRequest {
                         conn.request.buffer.drain(..2);
                         conn.request.chunk_state = ChunkState::ReadSize;
                         // Continue loop to start the next chunk size immediately
+                    }
+                    ChunkState::ReadTrailers => {
+                        if conn.request.buffer.len() > 8192 { // 8KB
+                            return Err(ParseError::HeaderTooLong);
+                        }
+                        match conn.request.extract_and_parse_header() {
+                            Ok(Some((k, v))) => {
+                                if let Some(allowed_trailers) = conn.request.headers.get("trailer")
+                                {
+                                    if allowed_trailers.to_lowercase().contains(&k) {
+                                        conn.request.trailers.insert(k, v);
+                                    }
+                                }
+                                continue;
+                            }
+                            Ok(None) => {
+                                conn.request.buffer.drain(..conn.request.cursor);
+                                conn.request.cursor = 0;
+                                return Ok(true);
+                            }
+                            Err(ParseError::IncompleteRequestLine) => return Ok(false),
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             }
