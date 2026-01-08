@@ -2,13 +2,19 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     fs::File,
-    io::{Stdin, Write},
+    io::{ErrorKind, Stdin, Write},
+    os::{
+        fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd},
+        unix::net::UnixStream,
+    },
     path::PathBuf,
     process::{ChildStdin, Command, Stdio},
     str::FromStr,
     sync::Arc,
     time::SystemTime,
 };
+
+use mio::{Interest, Poll, Token, event::Source};
 
 use crate::{
     http::HttpResponse,
@@ -184,13 +190,18 @@ impl HttpRequest {
         self.clear();
     }
 
-    pub fn parse_request<'a>(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
+    pub fn parse_request<'a>(
+        conn: &mut HttpConnection,
+        poll: &Poll,
+        server: &mut Server,
+        client_token: Token
+    ) -> core::result::Result<(), ParseError> {
         loop {
             let res = match conn.request.state {
                 ParsingState::RequestLine => conn.request.parse_request_line(),
                 ParsingState::Headers => HttpRequest::parse_headers(conn),
                 ParsingState::HeadersDone => {
-                    if let Some(res) = HttpRequest::setup_action(conn)? {
+                    if let Some(res) = HttpRequest::setup_action(conn, poll, server,client_token)? {
                         ///// dddddddddd
                         conn.write_buffer.extend_from_slice(&res.to_bytes());
                         conn.request.state = ParsingState::Complete;
@@ -229,6 +240,9 @@ impl HttpRequest {
 
     pub fn setup_action(
         conn: &mut HttpConnection,
+        poll: &Poll,
+        server: &mut Server,
+        client_token: Token
     ) -> core::result::Result<Option<HttpResponse>, ParseError> {
         let s_cfg = conn.resolve_config();
         conn.s_cfg = Some(Arc::clone(&s_cfg));
@@ -283,7 +297,7 @@ impl HttpRequest {
                     .as_ref()
                     .map_or(false, |ext| request.url.ends_with(ext))
                 {
-                    let program = match r_cfg.cgi_path {
+                    let program = match &r_cfg.cgi_path {
                         Some(p) => p.as_str(),
                         None => {
                             let ext = r_cfg.cgi_ext.as_deref().unwrap();
@@ -298,24 +312,62 @@ impl HttpRequest {
                     let full_script_path =
                         PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
 
+                    // 1. Create the OUT pair (Script Output -> Server)
+                    let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
+                        return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
+                    };
+                    server_out_std.set_nonblocking(true).ok();
+                    let mut server_out_mio = mio::net::UnixStream::from_std(server_out_std);
+
+                    // 2. Setup Input pair (Server -> Script Input)
+                    let Ok((server_in_std, script_in_std)) = UnixStream::pair() else {
+                        return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
+                    };
+                    server_in_std.set_nonblocking(true).ok();
+                    let mut server_in_mio = mio::net::UnixStream::from_std(server_in_std);
+
+                    let script_output_file =
+                        unsafe { File::from_raw_fd(script_out_std.into_raw_fd()) };
+                    let script_input_file =
+                        unsafe { File::from_raw_fd(script_in_std.into_raw_fd()) };
+
                     let mut cmd = Command::new(program);
                     cmd.arg(&full_script_path)
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
+                        .envs(Server::build_cgi_env(conn))
+                        .stdin(Stdio::from(script_input_file))
+                        .stdout(Stdio::from(script_output_file))
                         .stderr(Stdio::inherit());
 
-                    let envs = Server::build_cgi_env(conn);
-                    // cmd.envs(envs);
-
                     match cmd.spawn() {
-                        Ok(child) => {
-                            conn.action = ActiveAction::Cgi(child);
+                        Ok(mut child) => {
+                            let out_token = Token(server.next_token);
+                            server.next_token += 1;
+                            poll.registry()
+                                .register(&mut server_out_mio, out_token, Interest::READABLE)
+                                .ok();
+
+                            let in_token = Token(server.next_token);
+                            server.next_token += 1;
+                            poll.registry()
+                                .register(&mut server_in_mio, in_token, Interest::WRITABLE)
+                                .ok();
+
+                            conn.cgi_out_token = Some(out_token);
+                            conn.cgi_in_token = Some(in_token);
+
+                            conn.action = ActiveAction::Cgi {
+                                out_stream: server_out_mio,
+                                in_stream: server_in_mio,
+                                child,
+                            };
+                            
+                            server.cgi_to_client.insert(out_token, client_token);
+                            server.cgi_to_client.insert(in_token, client_token);
+
                             None
                         }
                         Err(_) => Some(Server::handle_error(500, Some(&s_cfg))),
                     }
-
-                    None
                 } else {
                     match request.method {
                         Method::GET => match Server::handle_get(request, r_cfg, &s_cfg) {
@@ -441,7 +493,7 @@ impl HttpRequest {
                 HttpRequest::execute_active_action(
                     &conn.request,
                     &mut conn.upload_manager,
-                    &conn.action,
+                    &mut conn.action,
                     start,
                     to_process,
                     &conn.boundary,
@@ -515,7 +567,7 @@ impl HttpRequest {
                         HttpRequest::execute_active_action(
                             &conn.request,
                             &mut conn.upload_manager,
-                            &conn.action,
+                            &mut conn.action,
                             0,
                             to_read,
                             &conn.boundary,
@@ -578,13 +630,13 @@ impl HttpRequest {
     pub fn execute_active_action<'a>(
         request: &HttpRequest,
         upload_manager: &mut Option<Upload>,
-        action: &ActiveAction,
+        action: &mut ActiveAction,
         start: usize,
         to_process: usize,
         boundary: &str,
     ) -> Result<(), ParseError> {
         let chunk = &request.buffer[start..start + to_process];
-        match &action {
+        match action {
             ActiveAction::Upload(upload_path) => {
                 if upload_manager.is_none() {
                     let upload_path = upload_path.clone();
@@ -602,15 +654,19 @@ impl HttpRequest {
                     }
                 }
             }
-            ActiveAction::FileDownload(a, b) => {}
-            ActiveAction::Cgi(_) => {
-                // Future: write to child process stdin
+            ActiveAction::Cgi(child) => {
+                if let Some(stdin) = &mut child.stdin {
+                    match stdin.write_all(chunk) {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                        Err(_) => {
+                            return Err(ParseError::Error(500));
+                        }
+                    }
+                }
             }
             ActiveAction::Discard => {}
-            ActiveAction::None => {
-                // If it's a small normal POST, keep in RAM
-                // conn.request.body.extend_from_slice(chunk);
-            }
+            _ => {}
         }
 
         Ok(())

@@ -48,13 +48,19 @@ pub struct HttpConnection {
     pub boundary: String,
     pub closed: bool,
     pub linger_until: Option<Instant>,
+    pub cgi_in_token: Option<Token>,
+    pub cgi_out_token: Option<Token>,
 }
 
 #[derive(Debug)]
 pub enum ActiveAction {
     Upload(PathBuf),
     FileDownload(File, usize),
-    Cgi(Child), // we use ChildStdin
+    Cgi {
+        out_stream: mio::net::UnixStream,
+        in_stream: mio::net::UnixStream,
+        child: std::process::Child,
+    },
     Discard,
     None,
 }
@@ -119,6 +125,8 @@ impl HttpConnection {
             boundary: String::new(),
             closed: false,
             linger_until: None,
+            cgi_in_token: None,
+            cgi_out_token: None,
         }
     }
 
@@ -187,7 +195,8 @@ impl HttpConnection {
 pub struct Server {
     pub listeners: HashMap<Token, (TcpListener, Vec<Arc<ServerConfig>>)>,
     pub connections: HashMap<Token, HttpConnection>,
-    next_token: usize,
+    pub cgi_to_client: HashMap<Token, Token>,
+    pub next_token: usize,
 }
 
 impl Server {
@@ -320,7 +329,7 @@ impl Server {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
 
-                    conn.closed = Self::proces_request(poll, token, conn)?;
+                    conn.closed = self.proces_request(poll, token, conn)?;
                 }
             }
 
@@ -360,7 +369,7 @@ impl Server {
                         info!(
                             "Write finished. Found leftover data in buffer, processing next request..."
                         );
-                        conn.closed = Self::proces_request(poll, token, conn)?;
+                        conn.closed = self.proces_request(poll, token, conn)?;
                     }
                 }
             }
@@ -377,11 +386,16 @@ impl Server {
         Ok(())
     }
 
-    fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<bool> {
+    fn proces_request(
+        &mut self,
+        poll: &Poll,
+        token: Token,
+        conn: &mut HttpConnection,
+    ) -> Result<bool> {
         let mut closed = false;
         trace!("### start processing a request ###");
         loop {
-            match HttpRequest::parse_request(conn) {
+            match HttpRequest::parse_request(conn, poll, self, token) {
                 Ok(()) => {
                     trace!("### request state is complete ###");
                     let s_cfg = conn.s_cfg.as_ref().unwrap();
@@ -389,6 +403,10 @@ impl Server {
                     if let Some(upload_manager) = &mut conn.upload_manager {
                         let response = Self::handel_upload_manager(upload_manager, s_cfg);
                         conn.write_buffer.extend_from_slice(&response.to_bytes());
+                    }
+
+                    if let ActiveAction::Cgi(child) = &mut conn.action {
+                        child.stdin.take();
                     }
 
                     conn.request.finish_request();
@@ -578,8 +596,36 @@ impl Server {
         }
     }
 
-    pub fn build_cgi_env(conn: &mut HttpConnection) {
-        
+    pub fn build_cgi_env(conn: &mut HttpConnection) -> HashMap<String, String> {
+        let req = &conn.request;
+        let mut envs = HashMap::new();
+
+        envs.insert("GATEWAY_INTERFACE".to_string(), "CGI/1.1".to_string());
+        envs.insert("SERVER_PROTOCOL".to_string(), "HTTP/1.1".to_string());
+        envs.insert("REQUEST_METHOD".to_string(), req.method.to_string());
+        // envs.insert("QUERY_STRING".to_string(), req.query_string.clone());
+        envs.insert("PATH_INFO".to_string(), req.url.clone());
+        envs.insert("SCRIPT_NAME".to_string(), req.url.clone());
+
+        envs.insert("SERVER_NAME".to_string(), "01-SERVER".to_string());
+        if let Ok(addr) = conn.stream.peer_addr() {
+            envs.insert("REMOTE_ADDR".to_string(), addr.ip().to_string());
+            envs.insert("REMOTE_PORT".to_string(), addr.port().to_string());
+        }
+
+        if let Some(ct) = req.headers.get("content-type") {
+            envs.insert("CONTENT_TYPE".to_string(), ct.clone());
+        }
+        if let Some(cl) = req.headers.get("content-length") {
+            envs.insert("CONTENT_LENGTH".to_string(), cl.clone());
+        }
+
+        for (k, v) in req.headers.iter().chain(&req.trailers) {
+            let env_key = format!("HTTP_{}", k.to_uppercase().replace('-', "_"));
+            envs.insert(env_key, v.clone());
+        }
+
+        envs
     }
 
     fn get_mime_type(extension: Option<&str>) -> &'static str {
