@@ -2,26 +2,25 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     fs::File,
-    io::{ErrorKind, Stdin, Write},
     os::{
-        fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd},
+        fd::{FromRawFd, IntoRawFd},
         unix::net::UnixStream,
     },
     path::PathBuf,
-    process::{ChildStdin, Command, Stdio},
+    process::{Command, Stdio},
     str::FromStr,
     sync::Arc,
     time::SystemTime,
 };
 
-use mio::{Interest, Poll, Token, event::Source};
+use mio::{Interest, Poll, Token};
 
 use crate::{
     http::HttpResponse,
     router::RoutingError,
     server::{
-        ActiveAction, HTTP_FOUND, HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND, HttpConnection, Server,
-        Upload, UploadState,
+        ActiveAction, CgiParsingState, HTTP_FOUND, HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND,
+        HttpConnection, Server, Upload, UploadState,
     },
 };
 
@@ -193,16 +192,22 @@ impl HttpRequest {
     pub fn parse_request<'a>(
         conn: &mut HttpConnection,
         poll: &Poll,
-        server: &mut Server,
-        client_token: Token
+        next_token: &mut usize,
+        cgi_to_client: &mut HashMap<Token, Token>,
+        client_token: Token,
     ) -> core::result::Result<(), ParseError> {
         loop {
             let res = match conn.request.state {
                 ParsingState::RequestLine => conn.request.parse_request_line(),
                 ParsingState::Headers => HttpRequest::parse_headers(conn),
                 ParsingState::HeadersDone => {
-                    if let Some(res) = HttpRequest::setup_action(conn, poll, server,client_token)? {
-                        ///// dddddddddd
+                    if let Some(res) = HttpRequest::setup_action(
+                        conn,
+                        poll,
+                        next_token,
+                        cgi_to_client,
+                        client_token,
+                    )? {
                         conn.write_buffer.extend_from_slice(&res.to_bytes());
                         conn.request.state = ParsingState::Complete;
                     }
@@ -241,8 +246,9 @@ impl HttpRequest {
     pub fn setup_action(
         conn: &mut HttpConnection,
         poll: &Poll,
-        server: &mut Server,
-        client_token: Token
+        next_token: &mut usize,
+        cgi_to_client: &mut HashMap<Token, Token>,
+        client_token: Token,
     ) -> core::result::Result<Option<HttpResponse>, ParseError> {
         let s_cfg = conn.resolve_config();
         conn.s_cfg = Some(Arc::clone(&s_cfg));
@@ -311,7 +317,7 @@ impl HttpRequest {
 
                     let full_script_path =
                         PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
-
+                    dbg!(&full_script_path);
                     // 1. Create the OUT pair (Script Output -> Server)
                     let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
                         return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
@@ -339,15 +345,15 @@ impl HttpRequest {
                         .stderr(Stdio::inherit());
 
                     match cmd.spawn() {
-                        Ok(mut child) => {
-                            let out_token = Token(server.next_token);
-                            server.next_token += 1;
+                        Ok(child) => {
+                            let out_token = Token(*next_token);
+                            *next_token += 1;
                             poll.registry()
                                 .register(&mut server_out_mio, out_token, Interest::READABLE)
                                 .ok();
 
-                            let in_token = Token(server.next_token);
-                            server.next_token += 1;
+                            let in_token = Token(*next_token);
+                            *next_token += 1;
                             poll.registry()
                                 .register(&mut server_in_mio, in_token, Interest::WRITABLE)
                                 .ok();
@@ -359,10 +365,12 @@ impl HttpRequest {
                                 out_stream: server_out_mio,
                                 in_stream: server_in_mio,
                                 child,
+                                parse_state: CgiParsingState::ReadHeaders,
+                                header_buf: Vec::new(),
                             };
-                            
-                            server.cgi_to_client.insert(out_token, client_token);
-                            server.cgi_to_client.insert(in_token, client_token);
+
+                            cgi_to_client.insert(out_token, client_token);
+                            cgi_to_client.insert(in_token, client_token);
 
                             None
                         }
@@ -404,10 +412,14 @@ impl HttpRequest {
             } else if content_length > 0 {
                 conn.request.state = ParsingState::Body;
             } else {
-                return Ok(Some(HttpResponse::new(400, "Bad Request").set_body(
-                    b"Error: No file data provided.".to_vec(),
-                    "text/plain",
-                )));
+                if matches!(conn.action, ActiveAction::Cgi { .. }) {
+                    conn.request.state = ParsingState::Complete;
+                } else {
+                    return Ok(Some(HttpResponse::new(400, "Bad Request").set_body(
+                        b"Error: No file data provided.".to_vec(),
+                        "text/plain",
+                    )));
+                }
             }
         }
 
@@ -482,7 +494,7 @@ impl HttpRequest {
     }
 
     pub fn parse_unchunked_body(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
-        if let Some(s_cfg) = &conn.s_cfg {
+        if let Some(_) = &conn.s_cfg {
             let available = conn.request.buffer.len() - conn.request.cursor;
             let to_process = std::cmp::min(available, conn.body_remaining);
             // let cursor = conn.request.cursor;
@@ -654,17 +666,21 @@ impl HttpRequest {
                     }
                 }
             }
-            ActiveAction::Cgi(child) => {
-                if let Some(stdin) = &mut child.stdin {
-                    match stdin.write_all(chunk) {
-                        Ok(_) => {}
-                        Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                        Err(_) => {
-                            return Err(ParseError::Error(500));
-                        }
-                    }
-                }
-            }
+            // ActiveAction::Cgi {
+            //     out_stream: _,
+            //     in_stream: _,
+            //     child: _,
+            // } => {
+            //     // if let Some(stdin) = &mut child.stdin {
+            //     //     match stdin.write_all(chunk) {
+            //     //         Ok(_) => {}
+            //     //         Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            //     //         Err(_) => {
+            //     //             return Err(ParseError::Error(500));
+            //     //         }
+            //     //     }
+            //     // }
+            // }
             ActiveAction::Discard => {}
             _ => {}
         }

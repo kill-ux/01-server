@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::server::HTTP_NOT_FOUND;
+
 #[derive(Debug)]
 pub struct HttpResponse {
     pub version: String,
@@ -24,7 +26,6 @@ impl HttpResponse {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
-    
 
     pub fn set_body(mut self, body: Vec<u8>, content_type: &str) -> Self {
         self.headers
@@ -48,6 +49,22 @@ impl HttpResponse {
         res.extend_from_slice(b"\r\n");
         res.extend_from_slice(&self.body);
         res
+    }
+
+    pub fn status_text(code: u16) -> String {
+        match code {
+            HTTP_NOT_FOUND => "NOT FOUND".to_string(),
+            _ => "Ok".to_string(),
+        }
+    }
+
+    pub fn to_bytes_headers_only(&self) -> Vec<u8> {
+        let mut res = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
+        for (k, v) in &self.headers {
+            res.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        res.push_str("\r\n");
+        res.into_bytes()
     }
 
     pub fn redirect(code: u16, target_url: &str) -> Self {

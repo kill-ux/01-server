@@ -1,13 +1,14 @@
 servers:
   - host: "127.0.0.1"
     ports: [8080]
-    server_name: "myproxy.local"
+    server_name: "localhost"
     default_server: true
     client_max_body_size: 500000000000 # 1MB //5000000000
     routes:
       - path: "/"
-        methods: ["GET"]
-        root: "./www"
+        methods: ["GET","POST","DELETE"]
+        cgi_ext: ".py"
+        root: "www/cgis"
       - path: "/list"
         methods: ["GET", "POST"]
         root: "./www"

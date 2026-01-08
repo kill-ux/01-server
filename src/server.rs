@@ -13,10 +13,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const READ_BUF_SIZE: usize = 4096;
 // 4xx Client Errors
@@ -60,6 +58,8 @@ pub enum ActiveAction {
         out_stream: mio::net::UnixStream,
         in_stream: mio::net::UnixStream,
         child: std::process::Child,
+        parse_state: CgiParsingState,
+        header_buf: Vec<u8>,
     },
     Discard,
     None,
@@ -234,6 +234,7 @@ impl Server {
         Ok(Self {
             listeners,
             connections: HashMap::new(),
+            cgi_to_client: HashMap::new(),
             next_token: next_token + 1,
         })
     }
@@ -260,6 +261,24 @@ impl Server {
 
             for event in events.iter() {
                 let token = event.token();
+
+                if let Some(&client_token) = self.cgi_to_client.get(&token) {
+                    if let Some(conn) = self.connections.get_mut(&client_token) {
+                        if let Err(e) = Self::handle_cgi_event(
+                            &poll,
+                            event,
+                            token,
+                            client_token,
+                            conn,
+                            &mut self.cgi_to_client,
+                        ) {
+                            eprintln!("Cgi Error: {}", e);
+                            conn.closed = true;
+                            // self.connections.remove(&token);
+                        }
+                    }
+                    continue;
+                }
 
                 // 1. Handle New Connections
                 if self.listeners.contains_key(&token) {
@@ -329,7 +348,13 @@ impl Server {
                     // conn.request.state != ParsingState::Complete
                     // Call parsing/routing logic
 
-                    conn.closed = self.proces_request(poll, token, conn)?;
+                    conn.closed = Self::proces_request(
+                        poll,
+                        token,
+                        &mut self.next_token,
+                        &mut self.cgi_to_client,
+                        conn,
+                    )?;
                 }
             }
 
@@ -369,7 +394,13 @@ impl Server {
                         info!(
                             "Write finished. Found leftover data in buffer, processing next request..."
                         );
-                        conn.closed = self.proces_request(poll, token, conn)?;
+                        conn.closed = Self::proces_request(
+                            poll,
+                            token,
+                            &mut self.next_token,
+                            &mut self.cgi_to_client,
+                            conn,
+                        )?;
                     }
                 }
             }
@@ -382,20 +413,187 @@ impl Server {
             }
         }
         println!("remove connection");
-        self.connections.remove(&token);
+        // self.connections.remove(&token);
+        if let Some(mut conn) = self.connections.remove(&token) {
+            if let ActiveAction::Cgi { child, .. } = &mut conn.action {
+                let _ = child.kill(); // Ensure it stops
+                let _ = child.wait(); // Reclaim process resources
+                Self::cleanup_cgi(&mut self.cgi_to_client, &mut conn);
+            }
+        }
         Ok(())
     }
 
+    pub fn handle_cgi_event(
+        poll: &Poll,
+        event: &Event,
+        cgi_token: Token,
+        client_token: Token,
+        conn: &mut HttpConnection,
+        cgi_to_client: &mut HashMap<Token, Token>,
+    ) -> Result<()> {
+        if let ActiveAction::Cgi {
+            out_stream,
+            in_stream,
+            child,
+            parse_state,
+            header_buf,
+        } = &mut conn.action
+        {
+            // SCRIPT -> SERVER (Stdout)
+            if event.is_readable() && Some(cgi_token) == conn.cgi_out_token {
+                let mut buf = [0u8; 4096];
+                match out_stream.read(&mut buf) {
+                    Ok(0) => {
+                        if let ActiveAction::Cgi {
+                            ref parse_state, ..
+                        } = conn.action
+                        {
+                            if *parse_state == CgiParsingState::StreamBodyChuncked {
+                                conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
+                            }
+                        }
+                        conn.closed = true
+                    }
+                    Ok(n) => {
+                        Self::process_cgi_stdout(conn, &buf[..n], client_token, poll)?;
+
+                        poll.registry().reregister(
+                            &mut conn.stream,
+                            client_token,
+                            Interest::READABLE | Interest::WRITABLE,
+                        )?;
+                    }
+                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+                    Err(_) => {
+                        conn.closed = true;
+                    }
+                }
+            }
+
+            // SERVER -> SCRIPT (Stdin)
+            if event.is_writable() && Some(cgi_token) == conn.cgi_in_token {
+                if !conn.request.buffer.is_empty() {
+                    match in_stream.write(&conn.request.buffer) {
+                        Ok(n) => {
+                            conn.request.buffer.drain(..n);
+                        }
+                        Err(e) if e.kind() != ErrorKind::WouldBlock => {}
+                        Err(_) => conn.closed = true,
+                    }
+                }
+            }
+
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    Self::cleanup_cgi(cgi_to_client, conn);
+                    // We don't necessarily close the client connection yet,
+                    // just transition out of the CGI state.
+                    conn.action = ActiveAction::None;
+                }
+                Ok(None) => {} // Still running
+                Err(_) => conn.closed = true,
+            }
+        }
+        Ok(())
+    }
+
+    pub fn process_cgi_stdout(
+        conn: &mut HttpConnection,
+        new_data: &[u8],
+        _client_token: Token,
+        _poll: &Poll,
+    ) -> Result<()> {
+        let (parse_state, header_buf) = match &mut conn.action {
+            ActiveAction::Cgi {
+                parse_state,
+                header_buf,
+                ..
+            } => (parse_state, header_buf),
+            _ => return Ok(()),
+        };
+
+        match parse_state {
+            CgiParsingState::ReadHeaders => {
+                header_buf.extend_from_slice(new_data);
+
+                if let Some(pos) = find_subsequence(header_buf, b"\r\n\r\n", 0)
+                    .or_else(|| find_subsequence(header_buf, b"\n\n", 0))
+                {
+                    let is_crlf = header_buf.contains(&b'\r');
+                    let delimiter_len = if is_crlf { 4 } else { 2 };
+
+                    let header_bytes = header_buf[..pos].to_vec();
+                    let body_start = header_buf[pos + delimiter_len..].to_vec();
+
+                    // 1. Create the Response from CGI headers
+                    let (status, cgi_headers) = parse_cgi_headers(&header_bytes);
+                    let mut res = HttpResponse::new(status, &HttpResponse::status_text(status));
+
+                    for (k, v) in cgi_headers {
+                        res.set_header(&k, &v);
+                    }
+
+                    // 2. Decide if we use Chunked Encoding
+                    let is_chunked = !res.headers.contains_key("content-length");
+                    if is_chunked {
+                        res.set_header("transfer-encoding", "chunked");
+                        *parse_state = CgiParsingState::StreamBodyChuncked;
+                    } else {
+                        *parse_state = CgiParsingState::StreamBody;
+                    }
+
+                    // 3. Send headers to client
+                    conn.write_buffer
+                        .extend_from_slice(&res.to_bytes_headers_only());
+
+                    // 4. Send any leftover body data we read
+                    if !body_start.is_empty() {
+                        Self::push_cgi_data(conn, &body_start, is_chunked);
+                    }
+                }
+            }
+            CgiParsingState::StreamBody => {
+                conn.write_buffer.extend_from_slice(new_data);
+            }
+            CgiParsingState::StreamBodyChuncked => {
+                Self::push_cgi_data(conn, new_data, true);
+            }
+        }
+        Ok(())
+    }
+
+    fn push_cgi_data(conn: &mut HttpConnection, data: &[u8], chunked: bool) {
+        if chunked {
+            let header = format!("{:X}\r\n", data.len());
+            conn.write_buffer.extend_from_slice(header.as_bytes());
+            conn.write_buffer.extend_from_slice(data);
+            conn.write_buffer.extend_from_slice(b"\r\n");
+        } else {
+            conn.write_buffer.extend_from_slice(data);
+        }
+    }
+
+    fn cleanup_cgi(cgi_to_client: &mut HashMap<Token, Token>, conn: &mut HttpConnection) {
+        if let Some(t) = conn.cgi_out_token.take() {
+            cgi_to_client.remove(&t);
+        }
+        if let Some(t) = conn.cgi_in_token.take() {
+            cgi_to_client.remove(&t);
+        }
+    }
+
     fn proces_request(
-        &mut self,
         poll: &Poll,
         token: Token,
+        next_token: &mut usize,
+        cgi_to_client: &mut HashMap<Token, Token>,
         conn: &mut HttpConnection,
     ) -> Result<bool> {
         let mut closed = false;
         trace!("### start processing a request ###");
         loop {
-            match HttpRequest::parse_request(conn, poll, self, token) {
+            match HttpRequest::parse_request(conn, poll, next_token, cgi_to_client, token) {
                 Ok(()) => {
                     trace!("### request state is complete ###");
                     let s_cfg = conn.s_cfg.as_ref().unwrap();
@@ -405,9 +603,9 @@ impl Server {
                         conn.write_buffer.extend_from_slice(&response.to_bytes());
                     }
 
-                    if let ActiveAction::Cgi(child) = &mut conn.action {
-                        child.stdin.take();
-                    }
+                    // if let ActiveAction::Cgi(child) = &mut conn.action {
+                    //     child.stdin.take();
+                    // }
 
                     conn.request.finish_request();
                     break;
@@ -1003,4 +1201,68 @@ impl Upload {
 
         self.current_file_path = None;
     }
+}
+
+pub fn parse_cgi_output(raw_output: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let mut header_end = 0;
+    if let Some(pos) = find_subsequence(raw_output, b"\r\n\r\n", 0) {
+        header_end = pos;
+    }
+
+    let header_section = String::from_utf8_lossy(&raw_output[..header_end]);
+    let body = raw_output[header_end + 4..].to_vec();
+
+    let mut status_code = 200;
+    let mut headers = Vec::new();
+
+    for line in header_section.lines() {
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let value = value.trim().to_string();
+
+            if key == "status" {
+                // CGI uses "Status: 404 Not Found", we just need the digits
+                status_code = value
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(200);
+            } else {
+                headers.push((key, value));
+            }
+        }
+    }
+
+    (status_code, headers, body)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CgiParsingState {
+    ReadHeaders,
+    StreamBody,
+    StreamBodyChuncked,
+}
+
+fn parse_cgi_headers(bytes: &[u8]) -> (u16, Vec<(String, String)>) {
+    let mut status = 200;
+    let mut headers = Vec::new();
+    let content = String::from_utf8_lossy(bytes);
+
+    for line in content.lines() {
+        if let Some((key, val)) = line.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let val = val.trim().to_string();
+
+            if key == "status" {
+                status = val
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(200);
+            } else {
+                headers.push((key, val));
+            }
+        }
+    }
+    (status, headers)
 }
