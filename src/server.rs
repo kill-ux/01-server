@@ -432,7 +432,6 @@ impl Server {
         conn: &mut HttpConnection,
         cgi_to_client: &mut HashMap<Token, Token>,
     ) -> Result<()> {
-        
         if let ActiveAction::Cgi {
             out_stream,
             in_stream,
@@ -453,7 +452,14 @@ impl Server {
                         conn.closed = true
                     }
                     Ok(n) => {
-                        Self::process_cgi_stdout(conn, &buf[..n], client_token, poll)?;
+                        Self::process_cgi_stdout(
+                            &mut conn.action,
+                            &mut conn.write_buffer,
+                            &mut conn.cgi_out_token,
+                            &buf[..n],
+                            client_token,
+                            poll,
+                        )?;
 
                         poll.registry().reregister(
                             &mut conn.stream,
@@ -496,12 +502,14 @@ impl Server {
     }
 
     pub fn process_cgi_stdout(
-        conn: &mut HttpConnection,
+        action: &mut ActiveAction,
+        write_buffer: &mut Vec<u8>,
+        cgi_out_token: &mut Option<Token>,
         new_data: &[u8],
         _client_token: Token,
         _poll: &Poll,
     ) -> Result<()> {
-        let (parse_state, header_buf) = match &mut conn.action {
+        let (parse_state, header_buf) = match &mut action {
             ActiveAction::Cgi {
                 parse_state,
                 header_buf,
@@ -541,8 +549,7 @@ impl Server {
                     }
 
                     // 3. Send headers to client
-                    conn.write_buffer
-                        .extend_from_slice(&res.to_bytes_headers_only());
+                    write_buffer.extend_from_slice(&res.to_bytes_headers_only());
 
                     // 4. Send any leftover body data we read
                     if !body_start.is_empty() {
@@ -560,14 +567,14 @@ impl Server {
         Ok(())
     }
 
-    fn push_cgi_data(conn: &mut HttpConnection, data: &[u8], chunked: bool) {
+    fn push_cgi_data(write_buffer: &mut Vec<u8>, data: &[u8], chunked: bool) {
         if chunked {
             let header = format!("{:X}\r\n", data.len());
-            conn.write_buffer.extend_from_slice(header.as_bytes());
-            conn.write_buffer.extend_from_slice(data);
-            conn.write_buffer.extend_from_slice(b"\r\n");
+            write_buffer.extend_from_slice(header.as_bytes());
+            write_buffer.extend_from_slice(data);
+            write_buffer.extend_from_slice(b"\r\n");
         } else {
-            conn.write_buffer.extend_from_slice(data);
+            write_buffer.extend_from_slice(data);
         }
     }
 
