@@ -2,9 +2,9 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     fs::File,
-    io::Write,
+    io::{Stdin, Write},
     path::PathBuf,
-    process::ChildStdin,
+    process::{ChildStdin, Command, Stdio},
     str::FromStr,
     sync::Arc,
     time::SystemTime,
@@ -283,16 +283,53 @@ impl HttpRequest {
                     .as_ref()
                     .map_or(false, |ext| request.url.ends_with(ext))
                 {
-                    conn.action = Some(ActiveAction::Cgi(String::new()));
+                    let program = match r_cfg.cgi_path {
+                        Some(p) => p.as_str(),
+                        None => {
+                            let ext = r_cfg.cgi_ext.as_deref().unwrap();
+                            match ext {
+                                "py" => "python3",
+                                "sh" => "bash",
+                                _ => "python3",
+                            }
+                        }
+                    };
+
+                    let full_script_path =
+                        PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
+
+                    let mut cmd = Command::new(program);
+                    cmd.arg(&full_script_path)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit());
+
+                    let envs = Server::build_cgi_env(conn);
+                    // cmd.envs(envs);
+
+                    match cmd.spawn() {
+                        Ok(child) => {
+                            conn.action = ActiveAction::Cgi(child);
+                            None
+                        }
+                        Err(_) => Some(Server::handle_error(500, Some(&s_cfg))),
+                    }
+
                     None
                 } else {
                     match request.method {
-                        Method::GET => Some(Server::handle_get(request, r_cfg, &s_cfg)),
+                        Method::GET => match Server::handle_get(request, r_cfg, &s_cfg) {
+                            (res, ActiveAction::FileDownload(file, file_size)) => {
+                                conn.action = ActiveAction::FileDownload(file, file_size);
+                                Some(res)
+                            }
+                            (res, _) => Some(res),
+                        },
                         Method::POST => {
                             // Decide if we will upload to a file
                             if !r_cfg.upload_dir.is_empty() {
                                 let path = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
-                                conn.action = Some(ActiveAction::Upload(path));
+                                conn.action = ActiveAction::Upload(path);
                                 None
                             } else {
                                 Some(Server::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
@@ -509,7 +546,8 @@ impl HttpRequest {
                         // Continue loop to start the next chunk size immediately
                     }
                     ChunkState::ReadTrailers => {
-                        if conn.request.buffer.len() > 8192 { // 8KB
+                        if conn.request.buffer.len() > 8192 {
+                            // 8KB
                             return Err(ParseError::HeaderTooLong);
                         }
                         match conn.request.extract_and_parse_header() {
@@ -540,14 +578,14 @@ impl HttpRequest {
     pub fn execute_active_action<'a>(
         request: &HttpRequest,
         upload_manager: &mut Option<Upload>,
-        action: &Option<ActiveAction>,
+        action: &ActiveAction,
         start: usize,
         to_process: usize,
         boundary: &str,
     ) -> Result<(), ParseError> {
         let chunk = &request.buffer[start..start + to_process];
         match &action {
-            Some(ActiveAction::Upload(upload_path)) => {
+            ActiveAction::Upload(upload_path) => {
                 if upload_manager.is_none() {
                     let upload_path = upload_path.clone();
                     *upload_manager = Some(Upload::new(upload_path, boundary));
@@ -564,11 +602,12 @@ impl HttpRequest {
                     }
                 }
             }
-            Some(ActiveAction::Cgi(_)) => {
+            ActiveAction::FileDownload(a, b) => {}
+            ActiveAction::Cgi(_) => {
                 // Future: write to child process stdin
             }
-            Some(ActiveAction::Discard) => {}
-            None => {
+            ActiveAction::Discard => {}
+            ActiveAction::None => {
                 // If it's a small normal POST, keep in RAM
                 // conn.request.body.extend_from_slice(chunk);
             }
@@ -587,7 +626,6 @@ impl HttpRequest {
                 .to_string()
         )
     }
-
 }
 
 fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {

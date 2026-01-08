@@ -22,6 +22,7 @@ pub struct RouteConfig {
     pub root: String,
     pub default_file: String,
     pub cgi_ext: Option<String>,
+    pub cgi_path: Option<String>,
     pub autoindex: bool,
     pub upload_dir: String,
 }
@@ -38,6 +39,7 @@ impl Default for RouteConfig {
             redirection: None,
             redirect_code: None,
             cgi_ext: None,
+            cgi_path: None,
         }
     }
 }
@@ -226,7 +228,7 @@ impl AppConfig {
 
                 if !route.upload_dir.is_empty() {
                     let d_dire = r_root.join(&route.upload_dir);
-                        if !can_read(&d_dire) || !d_dire.is_dir() {
+                    if !can_read(&d_dire) || !d_dire.is_dir() {
                         errors!(
                             "Route '{}': Upload dir {:?} not found.",
                             route.path,
@@ -249,8 +251,6 @@ impl AppConfig {
                         break;
                     }
                 }
-
-                
 
                 if let Some(ref ext) = route.cgi_ext {
                     if !ext.starts_with('.') {

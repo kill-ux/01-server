@@ -265,6 +265,83 @@ mod integration_tests {
         assert!(res_text.contains("413 Payload Too Large"));
         println!("Verified: Server sent 413 before closing.");
     }
+
+    #[test]
+    fn test_concurrent_streaming_gets() {
+        let test_root = "./tmp_concurrent_test";
+        let _ = fs::remove_dir_all(test_root);
+        fs::create_dir_all(test_root).unwrap();
+
+        // 1. Create a 1MB file
+        let file_path = format!("{}/large.txt", test_root);
+        let large_data = vec![b'A'; 1024 * 1024];
+        fs::write(&file_path, &large_data).unwrap();
+
+        // 2. Setup Server (Port 8083)
+        let mut config = AppConfig::default();
+        let mut router = RouteConfig::default();
+        router.path = "/".to_string();
+        router.root = test_root.to_string();
+        router.methods = vec!["GET".to_string()];
+
+        let server_cfg = ServerConfig {
+            server_name: "127.0.0.1".to_string(),
+            ports: vec![8083],
+            root: test_root.to_string(),
+            routes: vec![router],
+            default_server: true,
+            ..Default::default()
+        };
+        config.servers.push(server_cfg);
+
+        thread::spawn(move || {
+            let poll = Poll::new().unwrap();
+            let mut server = Server::new(config, &poll).unwrap();
+            server.run(poll).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(500));
+
+        // 3. Spawn 5 Concurrent Clients
+        let mut handles = Vec::new();
+
+        for i in 0..1000 {
+            let handle = thread::spawn(move || {
+                let mut stream =
+                    TcpStream::connect("127.0.0.1:8083").expect("Client connect failed");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+
+                let request = "GET /large.txt HTTP/1.1\r\nHost: 127.0.0.1:8083\r\n\r\n";
+                stream.write_all(request.as_bytes()).unwrap();
+
+                let mut received_bytes = 0;
+                let mut buffer = [0u8; 8192];
+
+                // Each client reads until they get the full 1MB
+                while received_bytes < 1024 * 1024 {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => received_bytes += n,
+                        Err(e) => panic!("Client {} failed: {}", i, e),
+                    }
+                }
+                println!("Client {} finished. Total bytes: {}", i, received_bytes);
+                received_bytes
+            });
+            handles.push(handle);
+        }
+
+        // 4. Join all threads and verify they all succeeded
+        for handle in handles {
+            let total = handle.join().unwrap();
+            // Check if we got at least 1MB (data + headers)
+            assert!(total >= 1024 * 1024);
+        }
+
+        let _ = fs::remove_dir_all(test_root);
+    }
 }
 
 use std::io::{Read, Write};

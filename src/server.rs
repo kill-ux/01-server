@@ -8,10 +8,12 @@ use mio::{
 };
 use proxy_log::{info, trace};
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::SocketAddr;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -39,7 +41,7 @@ pub struct HttpConnection {
     pub request: HttpRequest,
     pub config_list: Vec<Arc<ServerConfig>>,
     pub s_cfg: Option<Arc<ServerConfig>>,
-    pub action: Option<ActiveAction>,
+    pub action: ActiveAction,
     pub upload_manager: Option<Upload>,
     pub total_body_read: usize,
     pub body_remaining: usize,
@@ -51,8 +53,10 @@ pub struct HttpConnection {
 #[derive(Debug)]
 pub enum ActiveAction {
     Upload(PathBuf),
-    Cgi(String), // we use ChildStdin
+    FileDownload(File, usize),
+    Cgi(Child), // we use ChildStdin
     Discard,
+    None,
 }
 
 #[derive(Debug)]
@@ -109,7 +113,7 @@ impl HttpConnection {
             upload_manager: None,
             config_list,
             s_cfg: None,
-            action: None,
+            action: ActiveAction::None,
             total_body_read: 0,
             body_remaining: 0,
             boundary: String::new(),
@@ -320,11 +324,35 @@ impl Server {
                 }
             }
 
-            if event.is_writable() && !conn.write_buffer.is_empty() {
+            if event.is_writable()
+                && (!conn.write_buffer.is_empty()
+                    || matches!(conn.action, ActiveAction::FileDownload(_, _)))
+            {
+                if conn.write_buffer.is_empty() {
+                    if let ActiveAction::FileDownload(ref mut file, ref mut remaining) = conn.action
+                    {
+                        let mut chunk = vec![0u8; 8192]; // 8KB 
+                        match file.read(&mut chunk) {
+                            Ok(0) => conn.action = ActiveAction::None,
+                            Ok(n) => {
+                                conn.write_buffer.extend_from_slice(&chunk[..n]);
+                                *remaining -= n;
+                            }
+                            Err(_) => conn.closed = true,
+                        }
+                    }
+                }
+
                 conn.closed = conn.write_data() || conn.closed;
                 if !conn.closed && conn.write_buffer.is_empty() {
+                    let mut interest = Interest::READABLE;
+
+                    if matches!(conn.action, ActiveAction::FileDownload(_, _)) {
+                        interest |= Interest::WRITABLE;
+                    }
+
                     poll.registry()
-                        .reregister(&mut conn.stream, token, Interest::READABLE)?;
+                        .reregister(&mut conn.stream, token, interest)?;
 
                     if !conn.request.buffer.is_empty()
                         && conn.request.state == ParsingState::RequestLine
@@ -383,7 +411,8 @@ impl Server {
             }
         }
 
-        if !conn.write_buffer.is_empty() {
+        if !conn.write_buffer.is_empty() || matches!(conn.action, ActiveAction::FileDownload(_, _))
+        {
             poll.registry().reregister(
                 &mut conn.stream,
                 token,
@@ -440,7 +469,7 @@ impl Server {
         request: &HttpRequest,
         r_cfg: &RouteConfig,
         s_cfg: &Arc<ServerConfig>,
-    ) -> HttpResponse {
+    ) -> (HttpResponse, ActiveAction) {
         let root = &r_cfg.root;
         let relative_path = request
             .url
@@ -453,26 +482,53 @@ impl Server {
             if r_cfg.default_file != "" {
                 path.push(&r_cfg.default_file);
             } else if r_cfg.autoindex {
-                return Self::generate_autoindex(&path, &request.url);
+                return (
+                    Self::generate_autoindex(&path, &request.url),
+                    ActiveAction::None,
+                );
             } else {
-                return HttpResponse::new(403, "Forbidden").set_body(
-                    b"403 Forbidden: Directory listing denied".to_vec(),
-                    "text/plain",
+                return (
+                    HttpResponse::new(403, "Forbidden").set_body(
+                        b"403 Forbidden: Directory listing denied".to_vec(),
+                        "text/plain",
+                    ),
+                    ActiveAction::None,
                 );
             }
         }
 
-        match fs::read(&path) {
-            Ok(content) => {
+        match File::open(&path) {
+            Ok(file) => {
+                let Ok(metadata) = file.metadata() else {
+                    return (
+                        Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+                        ActiveAction::None,
+                    );
+                };
+                let file_size = metadata.size() as usize;
                 let mime_type = Self::get_mime_type(path.extension().and_then(|s| s.to_str()));
-                HttpResponse::new(200, "OK").set_body(content, mime_type)
+                // conn.action = Some();
+
+                let mut res = HttpResponse::new(200, "OK");
+                res.headers
+                    .insert("Content-Length".to_string(), file_size.to_string());
+                res.headers
+                    .insert("Content-Type".to_string(), mime_type.to_string());
+                (res, ActiveAction::FileDownload(file, file_size))
             }
             Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
-                std::io::ErrorKind::PermissionDenied => {
-                    Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg))
-                }
-                _ => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+                std::io::ErrorKind::NotFound => (
+                    Self::handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
+                    ActiveAction::None,
+                ),
+                std::io::ErrorKind::PermissionDenied => (
+                    Self::handle_error(HTTP_FORBIDDEN, Some(s_cfg)),
+                    ActiveAction::None,
+                ),
+                _ => (
+                    Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+                    ActiveAction::None,
+                ),
             },
         }
     }
@@ -520,6 +576,10 @@ impl Server {
                 _ => Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
             },
         }
+    }
+
+    pub fn build_cgi_env(conn: &mut HttpConnection) {
+        
     }
 
     fn get_mime_type(extension: Option<&str>) -> &'static str {
@@ -797,7 +857,6 @@ impl Upload {
         }
     }
 
-
     fn flush_partial_data(&mut self, req: &HttpRequest, data_start: usize) {
         let safety_margin = self.boundary.len() + 10;
 
@@ -899,4 +958,3 @@ impl Upload {
         self.current_file_path = None;
     }
 }
-
