@@ -266,3 +266,88 @@ mod integration_tests {
         println!("Verified: Server sent 413 before closing.");
     }
 }
+
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::thread::sleep;
+use std::time::Duration;
+
+#[test]
+fn test_chunked_trailers_and_pipelining() {
+    // 1. Setup connection
+    let addr = "127.0.0.1:8080";
+    let mut stream =
+        TcpStream::connect(addr).expect("Failed to connect. Is your server running on 8080?");
+
+    // 2. Part 1: Send Request Line, Headers, and initial Chunks
+    // We include 'Trailer: X-Integrity' to announce the trailer
+    let part1 = "POST /upload HTTP/1.1\r\n\
+        Host: localhost\r\n\
+        Transfer-Encoding: chunked\r\n\
+        Trailer: X-Integrity\r\n\
+        Content-Type: text/plain\r\n\
+        \r\n\
+        6\r\n\
+        123456\r\n";
+
+    stream.write_all(part1.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    // 3. Simulate fragmentation (wait for server to handle partial data)
+    sleep(Duration::from_millis(200));
+
+    // 4. Part 2: Send Terminal Chunk (0)
+    stream.write_all(b"0\r\n").unwrap();
+    stream.flush().unwrap();
+
+    // Simulate network delay before sending trailers
+    sleep(Duration::from_millis(200));
+
+    // 5. Part 3: Send Trailer AND a second GET request (Pipelining)
+    // Both are sent in the same write to see if the server separates them
+    let part3 = "X-Integrity: 12345\r\n\
+        \r\n\
+        GET /index.html HTTP/1.1\r\n\
+        Host: localhost:8080\r\n\
+        \r\n";
+
+    stream.write_all(part3.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    // 6. Verification: Read the response buffer
+    let mut response = String::new();
+    let mut buf = [0u8; 8192];
+
+    // We might need to read multiple times to get both responses
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    match stream.read(&mut buf) {
+        Ok(n) => response.push_str(&String::from_utf8_lossy(&buf[..n])),
+        Err(e) => panic!("Failed to read from server: {}", e),
+    }
+
+    println!("Full Server Response:\n{}", response);
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    match stream.read(&mut buf) {
+        Ok(n) => response.push_str(&String::from_utf8_lossy(&buf[..n])),
+        Err(e) => panic!("Failed to read from server: {}", e),
+    }
+
+    // 7. Assertions (Customize based on your expected response body/status)
+    assert!(
+        response.contains("201 Created") || response.contains("200 OK"),
+        "First request failed"
+    );
+
+    // Check if the pipelined request also got a response
+    let response_count = response.matches("HTTP/1.1").count();
+    assert!(
+        response_count >= 2,
+        "Pipelining failed: Expected at least 2 responses, found {}",
+        response_count
+    );
+}

@@ -6,7 +6,7 @@ use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
-use proxy_log::info;
+use proxy_log::{info, trace};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -228,7 +228,7 @@ impl Server {
     pub fn run(&mut self, mut poll: Poll) -> Result<()> {
         let mut events = Events::with_capacity(1024);
 
-        println!(
+        info!(
             "Server running. Monitoring {} listeners...",
             self.listeners.len()
         );
@@ -329,7 +329,7 @@ impl Server {
                     if !conn.request.buffer.is_empty()
                         && conn.request.state == ParsingState::RequestLine
                     {
-                        println!(
+                        info!(
                             "Write finished. Found leftover data in buffer, processing next request..."
                         );
                         conn.closed = Self::proces_request(poll, token, conn)?;
@@ -351,64 +351,20 @@ impl Server {
 
     fn proces_request(poll: &Poll, token: Token, conn: &mut HttpConnection) -> Result<bool> {
         let mut closed = false;
-        // dbg!("### start processing a request ###");
+        trace!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(conn) {
                 Ok(()) => {
-                    if conn.request.state == ParsingState::Complete {
-                        println!("complete");
-                        let s_cfg = conn.s_cfg.as_ref().unwrap();
+                    trace!("### request state is complete ###");
+                    let s_cfg = conn.s_cfg.as_ref().unwrap();
 
-                        if let Some(upload_manager) = &mut conn.upload_manager {
-                            if upload_manager.boundary.is_empty() {
-                                if let Some(target_path) = &upload_manager.current_file_path {
-                                    upload_manager.saved_filenames.push(
-                                        target_path
-                                            .file_name()
-                                            .unwrap()
-                                            .to_string_lossy()
-                                            .into_owned(),
-                                    );
-                                    upload_manager.files_saved += 1;
-                                }
-                            }
-                            let response = if upload_manager.saved_filenames.len() > 0 {
-                                let mut res = HttpResponse::new(HTTP_CREATED, "Created");
-                                if upload_manager.saved_filenames.len() == 1 {
-                                    res.headers.insert(
-                                        "location".to_string(),
-                                        format!("/upload/{}", upload_manager.saved_filenames[0]),
-                                    );
-                                    res.set_body(
-                                        format!(
-                                            "File saved as {}",
-                                            upload_manager.saved_filenames[0]
-                                        )
-                                        .into_bytes(),
-                                        "text/plain",
-                                    )
-                                } else {
-                                    let body_msg = format!(
-                                        "Saved files: {}",
-                                        upload_manager.saved_filenames.join(", ")
-                                    );
-                                    res.set_body(body_msg.into_bytes(), "text/plain")
-                                }
-                            } else {
-                                Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg))
-                            };
-
-                            conn.write_buffer.extend_from_slice(&response.to_bytes());
-                        }
-                        conn.request.finish_request();
-                        // conn.request.buffer.clear();
-
-                        // if conn.request.buffer.is_empty() {
-                        break;
-                        // }
-                    } else {
-                        break;
+                    if let Some(upload_manager) = &mut conn.upload_manager {
+                        let response = Self::handel_upload_manager(upload_manager, s_cfg);
+                        conn.write_buffer.extend_from_slice(&response.to_bytes());
                     }
+
+                    conn.request.finish_request();
+                    break;
                 }
                 Err(ParseError::IncompleteRequestLine) => break,
                 Err(e) => {
@@ -427,13 +383,6 @@ impl Server {
             }
         }
 
-        if conn.request.state != ParsingState::Complete {
-            // println!(
-            //     "Request is still partial (State: {:?}). Waiting for more data...",
-            //     conn.request.state
-            // );
-        }
-
         if !conn.write_buffer.is_empty() {
             poll.registry().reregister(
                 &mut conn.stream,
@@ -442,6 +391,45 @@ impl Server {
             )?;
         }
         Ok(closed)
+    }
+
+    pub fn handel_upload_manager(
+        upload_manager: &mut Upload,
+        s_cfg: &Arc<ServerConfig>,
+    ) -> HttpResponse {
+        if upload_manager.boundary.is_empty() {
+            if let Some(target_path) = &upload_manager.current_file_path {
+                upload_manager.saved_filenames.push(
+                    target_path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                upload_manager.files_saved += 1;
+            }
+        }
+        let response = if upload_manager.saved_filenames.len() > 0 {
+            let mut res = HttpResponse::new(HTTP_CREATED, "Created");
+            if upload_manager.saved_filenames.len() == 1 {
+                res.headers.insert(
+                    "location".to_string(),
+                    format!("/upload/{}", upload_manager.saved_filenames[0]),
+                );
+                res.set_body(
+                    format!("File saved as {}", upload_manager.saved_filenames[0]).into_bytes(),
+                    "text/plain",
+                )
+            } else {
+                let body_msg =
+                    format!("Saved files: {}", upload_manager.saved_filenames.join(", "));
+                res.set_body(body_msg.into_bytes(), "text/plain")
+            }
+        } else {
+            Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg))
+        };
+
+        response
     }
 
     pub fn handle_cgi(_request: &HttpRequest, _r_cfg: &RouteConfig) -> HttpResponse {
@@ -809,48 +797,6 @@ impl Upload {
         }
     }
 
-    // fn flush_partial_data(&mut self, req: &HttpRequest) {
-    //     let boundary_len = self.boundary.len() + 10; // --boundary\r\n
-
-    //     if self.buffer.len() > boundary_len {
-    //         let write_end = self.buffer.len() - boundary_len;
-    //         let data_to_write = if let MultiPartState::NextBoundary(data_start) = self.multi_part_state {
-    //             if write_end > data_start {
-    //              &self.buffer[data_start..write_end]
-    //             } else {
-    //              return; // Nothing new to write yet
-    //             }
-    //         } else {
-    //             return;
-    //         };
-
-    //         // let data_to_write = &self.buffer[..write_end];
-
-    //         let target_path = if let Some(ref path) = self.current_file_path {
-    //             path.clone()
-    //         } else {
-    //             let path = self
-    //                 .get_current_part_path(req)
-    //                 .unwrap_or_else(|| PathBuf::from("tmp_upload"));
-    //             let unique =
-    //                 get_unique_path(&self.path, path.file_name().unwrap().to_str().unwrap());
-    //             self.current_file_path = Some(unique.clone());
-    //             unique
-    //         };
-
-    //         if let Ok(mut file) = OpenOptions::new()
-    //             .create(true)
-    //             .append(true)
-    //             .open(&target_path)
-    //         {
-    //             let _ = file.write_all(data_to_write);
-    //         }
-
-    //         self.buffer.drain(..write_end);
-    //         self.current_pos = 0;
-    //         self.multi_part_state = MultiPartState::NextBoundary(data_start);
-    //     }
-    // }
 
     fn flush_partial_data(&mut self, req: &HttpRequest, data_start: usize) {
         let safety_margin = self.boundary.len() + 10;
@@ -954,23 +900,3 @@ impl Upload {
     }
 }
 
-/*
-
-if files_saved > 0 {
-            let mut res = HttpResponse::new(HTTP_CREATED, "Created");
-            if files_saved == 1 {
-                res.headers.insert(
-                    "location".to_string(),
-                    format!("/upload/{}", saved_filenames[0]),
-                );
-                return res.set_body(
-                    format!("File saved as {}", saved_filenames[0]).into_bytes(),
-                    "text/plain",
-                );
-            }
-            let body_msg = format!("Saved files: {}", saved_filenames.join(", "));
-            return res.set_body(body_msg.into_bytes(), "text/plain");
-        }
-        return Self::handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
-
-        */

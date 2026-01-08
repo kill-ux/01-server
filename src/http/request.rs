@@ -174,6 +174,7 @@ impl HttpRequest {
     pub fn clear(&mut self) {
         self.state = ParsingState::RequestLine;
         self.headers.clear();
+        self.trailers.clear();
         self.body.clear();
     }
 
@@ -262,7 +263,6 @@ impl HttpRequest {
 
         // 1. Initial Size Check
         if !is_chunked && content_length > s_cfg.client_max_body_size {
-            dbg!("gggggggggggggggggggggggggggggggg");
             return Err(ParseError::PayloadTooLarge);
             // return Some(Server::handle_error(413, Some(&s_cfg)));
         }
@@ -588,17 +588,6 @@ impl HttpRequest {
         )
     }
 
-    fn sanitize_filename(name: String) -> String {
-        let path = std::path::Path::new(&name);
-        // 1. Take only the file name part, ignore any paths they sent
-        let leaf = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("default_upload");
-
-        // 2. Replace spaces or weird characters if you want to be extra safe
-        leaf.replace(|c: char| !c.is_alphanumeric() && c != '.', "_")
-    }
 }
 
 fn find_crlf(buffer: &[u8], start_offset: usize) -> Option<usize> {
