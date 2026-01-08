@@ -1,4 +1,4 @@
-rm www/upload/*
+rm ./www/uploads/*
 git add -A && \
 git commit -m "$1" && \
 git push && \
