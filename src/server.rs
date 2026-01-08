@@ -432,6 +432,7 @@ impl Server {
         conn: &mut HttpConnection,
         cgi_to_client: &mut HashMap<Token, Token>,
     ) -> Result<()> {
+        
         if let ActiveAction::Cgi {
             out_stream,
             in_stream,
@@ -445,14 +446,10 @@ impl Server {
                 let mut buf = [0u8; 4096];
                 match out_stream.read(&mut buf) {
                     Ok(0) => {
-                        if let ActiveAction::Cgi {
-                            ref parse_state, ..
-                        } = conn.action
-                        {
-                            if *parse_state == CgiParsingState::StreamBodyChuncked {
-                                conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
-                            }
+                        if *parse_state == CgiParsingState::StreamBodyChuncked {
+                            conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
                         }
+
                         conn.closed = true
                     }
                     Ok(n) => {

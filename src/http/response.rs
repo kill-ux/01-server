@@ -22,7 +22,7 @@ impl HttpResponse {
         }
     }
 
-    pub fn set_header(mut self, key: &str, value: &str) -> Self {
+    pub fn set_header(&mut self, key: &str, value: &str) -> &mut Self {
         self.headers.insert(key.to_string(), value.to_string());
         self
     }
@@ -77,9 +77,11 @@ impl HttpResponse {
             _ => "Found",
         };
 
-        HttpResponse::new(code, status_text)
-            .set_header("Location", target_url)
+        let mut res = HttpResponse::new(code, status_text);
+        res.set_header("Location", target_url)
             .set_header("Content-Length", "0")
-            .set_header("Connection", "close")
+            .set_header("Connection", "close");
+
+        res
     }
 }
