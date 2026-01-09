@@ -27,3 +27,4 @@ Step	Who	      Action
 3	    CGI	      Prints X-Session-Update: theme=red to stdout.
 4	    Server	  Reads CGI stdout. Sees the X-Session-Update. Updates the HashMap in Rust memory.
 5	    Server	  Sends the final HTML to the browser.
+
