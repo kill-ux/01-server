@@ -317,7 +317,7 @@ impl HttpRequest {
 
                     let full_script_path =
                         PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
-                    dbg!(&full_script_path);
+
                     // 1. Create the OUT pair (Script Output -> Server)
                     let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
                         return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
@@ -372,6 +372,8 @@ impl HttpRequest {
                             cgi_to_client.insert(out_token, client_token);
                             cgi_to_client.insert(in_token, client_token);
 
+                            dbg!("cgi running");
+
                             None
                         }
                         Err(_) => Some(Server::handle_error(500, Some(&s_cfg))),
@@ -422,6 +424,9 @@ impl HttpRequest {
                 }
             }
         }
+
+        dbg!(&res);
+        dbg!(&conn.request.state);
 
         Ok(res)
     }
@@ -500,26 +505,26 @@ impl HttpRequest {
             // let cursor = conn.request.cursor;
 
             if to_process > 0 {
-                let start = conn.request.cursor;
+                if matches!(conn.action, ActiveAction::Cgi { .. }) {
+                    // MOVE data to CGI buffer
+                    let data = conn.request.buffer.drain(..to_process).collect::<Vec<u8>>();
+                    conn.cgi_buffer.extend_from_slice(&data);
+                    conn.body_remaining -= to_process;
+                } else {
+                    let start = conn.request.cursor;
+                    HttpRequest::execute_active_action(
+                        &conn.request,
+                        &mut conn.upload_manager,
+                        &mut conn.action,
+                        start,
+                        to_process,
+                        &conn.boundary,
+                    )?;
 
-                match conn.action {
-                    ActiveAction::Cgi { .. } => {
-                        conn.body_remaining -= to_process;
-                    }
-                    _ => {
-                        HttpRequest::execute_active_action(
-                            &conn.request,
-                            &mut conn.upload_manager,
-                            &mut conn.action,
-                            start,
-                            to_process,
-                            &conn.boundary,
-                        )?;
-
-                        conn.body_remaining -= to_process;
-                        conn.request.buffer.drain(start..start + to_process);
-                    }
+                    conn.body_remaining -= to_process;
+                    conn.request.buffer.drain(start..start + to_process);
                 }
+          
             }
         }
 
@@ -583,24 +588,38 @@ impl HttpRequest {
                         let available = conn.request.buffer.len();
                         let to_read = std::cmp::min(available, remaining_size);
 
-                        HttpRequest::execute_active_action(
-                            &conn.request,
-                            &mut conn.upload_manager,
-                            &mut conn.action,
-                            0,
-                            to_read,
-                            &conn.boundary,
-                        )?;
+                        // 1. Drain the raw data from the network buffer ONCE
+                        let data = conn.request.buffer.drain(..to_read).collect::<Vec<u8>>();
 
+                        // 2. Route the data
+                        match &mut conn.action {
+                            ActiveAction::Cgi { .. } => {
+                                // Push raw data to the dedicated CGI buffer
+                                conn.cgi_buffer.extend_from_slice(&data);
+                            }
+                            _ => {
+                                // Normal Upload handling (Uses the chunk we just drained)
+                                // Note: You may need to pass 'data' to handle_upload instead of 'buffer'
+                                if let Some(mgr) = &mut conn.upload_manager {
+                                    if !conn.boundary.is_empty() {
+                                        mgr.handle_upload_3(&conn.request, &data);
+                                    } else {
+                                        mgr.handle_upload_2(&conn.request, &data);
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Update metadata
                         conn.total_body_read += to_read;
                         let new_remaining = remaining_size - to_read;
-                        conn.request.buffer.drain(..to_read);
 
+                        // 4. Update Chunk State
                         if new_remaining == 0 {
                             conn.request.chunk_state = ChunkState::ReadTrailingCRLF;
                         } else {
                             conn.request.chunk_state = ChunkState::ReadData(new_remaining);
-                            return Ok(false); // Wait for more data
+                            return Ok(false); // Yield to get more data from socket
                         }
                     }
 

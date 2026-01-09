@@ -48,6 +48,7 @@ pub struct HttpConnection {
     pub linger_until: Option<Instant>,
     pub cgi_in_token: Option<Token>,
     pub cgi_out_token: Option<Token>,
+    pub cgi_buffer: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -127,6 +128,7 @@ impl HttpConnection {
             linger_until: None,
             cgi_in_token: None,
             cgi_out_token: None,
+            cgi_buffer: Vec::new(),
         }
     }
 
@@ -330,6 +332,24 @@ impl Server {
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&token) {
+
+            
+            if !conn.cgi_buffer.is_empty() {
+                if let ActiveAction::Cgi {
+                    ref mut in_stream, ..
+                } = conn.action
+                {
+                    match in_stream.write(&conn.cgi_buffer) {
+                        Ok(n) => {
+                            conn.cgi_buffer.drain(..n);
+                            dbg!("drained cgi_buffer", n);
+                        }
+                        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+                        Err(_) => conn.closed = true,
+                    }
+                }
+            }
+
             if !conn.closed && event.is_readable() {
                 match conn.read_data() {
                     Ok(is_eof) => conn.closed = is_eof,
@@ -344,13 +364,24 @@ impl Server {
                     Err(_) => conn.closed = true,
                 };
 
+                dbg!("we are read this bytes", conn.request.buffer.len());
+
+                let mut interest = Interest::READABLE;
+                if let ActiveAction::Cgi { .. } = conn.action
+                    && conn.request.buffer.len() > MAX_READ_DATA
+                {
+                    interest = Interest::WRITABLE;
+                    trace!(
+                        "Backpressure: Buffer full ({}), pausing socket read",
+                        conn.request.buffer.len()
+                    );
+                }
+
                 poll.registry()
-                    .reregister(&mut conn.stream, token, Interest::READABLE)?;
+                    .reregister(&mut conn.stream, token, interest)?;
 
-                if !conn.closed && !conn.request.buffer.is_empty() && conn.write_buffer.is_empty() {
-                    // conn.request.state != ParsingState::Complete
-                    // Call parsing/routing logic
-
+                if !conn.closed && !conn.request.buffer.is_empty() && conn.cgi_buffer.is_empty() {
+                    dbg!("pocess request");
                     conn.closed = Self::proces_request(
                         poll,
                         token,
@@ -387,6 +418,8 @@ impl Server {
                     if matches!(conn.action, ActiveAction::FileDownload(_, _)) {
                         interest |= Interest::WRITABLE;
                     }
+
+                    dbg!(&interest);
 
                     poll.registry()
                         .reregister(&mut conn.stream, token, interest)?;
@@ -435,6 +468,7 @@ impl Server {
         conn: &mut HttpConnection,
         cgi_to_client: &mut HashMap<Token, Token>,
     ) -> Result<()> {
+        dbg!(conn.body_remaining);
         if let ActiveAction::Cgi {
             out_stream,
             in_stream,
@@ -460,7 +494,7 @@ impl Server {
                         // conn.closed = true;
                     }
                     Ok(n) => {
-                        dbg!(n);
+                        dbg!("read from cgi a ", n);
 
                         // FIX: Pass individual fields instead of 'conn'
                         Self::process_cgi_stdout(
@@ -483,10 +517,24 @@ impl Server {
 
             // SERVER -> SCRIPT (Stdin)
             if event.is_writable() && Some(cgi_token) == conn.cgi_in_token {
-                if !conn.request.buffer.is_empty() {
-                    match in_stream.write(&conn.request.buffer) {
+                if !conn.cgi_buffer.is_empty() {
+                    match in_stream.write(&conn.cgi_buffer) {
                         Ok(n) => {
-                            conn.request.buffer.drain(..n);
+                            dbg!("write to cgi", n);
+                            conn.cgi_buffer.drain(..n);
+
+                            if conn.cgi_buffer.len() < 65536 {
+                                poll.registry().reregister(
+                                    &mut conn.stream,
+                                    client_token,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                )?;
+                            }
+
+                            if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
+                                conn.cgi_in_token = None;
+                                trace!("CGI stdin pipe closed (EOF sent)");
+                            }
                         }
                         Err(e) if e.kind() != ErrorKind::WouldBlock => {}
                         Err(_) => conn.closed = true,
@@ -495,9 +543,23 @@ impl Server {
             }
 
             // Child process status check
+            dbg!("check status");
             match child.try_wait() {
-                Ok(Some(status)) => {
-                    dbg!(status);
+                Ok(Some(_status)) => {
+                    dbg!("kill");
+
+                    if *parse_state == CgiParsingState::StreamBodyChuncked {
+                        conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
+                        // Reregister client to ensure WRITABLE is active so the '0' actually gets sent
+                        poll.registry()
+                            .reregister(
+                                &mut conn.stream,
+                                client_token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )
+                            .ok();
+                    }
+
                     Self::cleanup_cgi(cgi_to_client, conn);
                     conn.action = ActiveAction::None;
                 }
@@ -589,7 +651,7 @@ impl Server {
         conn: &mut HttpConnection,
     ) -> Result<bool> {
         let mut closed = false;
-        trace!("### start processing a request ###");
+        // trace!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(conn, poll, next_token, cgi_to_client, token) {
                 Ok(()) => {
