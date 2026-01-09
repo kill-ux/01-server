@@ -1,31 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::{self, Display},
-    fs::File,
-    io::{ErrorKind, Write},
-    os::{
-        fd::{FromRawFd, IntoRawFd},
-        unix::net::UnixStream,
-    },
-    path::PathBuf,
-    process::{Command, Stdio},
-    str::FromStr,
-    sync::Arc,
-    time::SystemTime,
-};
-
-use mio::{Interest, Poll, Token};
-
-use crate::{
-    http::HttpResponse,
-    router::RoutingError,
-    server::{
-        ActiveAction, CgiParsingState, HTTP_FOUND, HTTP_INTERNAL_SERVER_ERROR,
-        HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND, HttpConnection, Server, Upload, UploadState,
-    },
-};
-
-const _1MB: usize = 1_024 * 1024;
+use crate::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Method {
@@ -50,7 +23,7 @@ impl Method {
 
 impl FromStr for Method {
     type Err = ParseError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
             "GET" => Ok(Method::GET),
             "POST" => Ok(Method::POST),
@@ -190,6 +163,57 @@ impl HttpRequest {
         self.clear();
     }
 
+    pub fn proces_request(
+        poll: &Poll,
+        token: Token,
+        next_token: &mut usize,
+        cgi_to_client: &mut HashMap<Token, Token>,
+        conn: &mut HttpConnection,
+    ) -> Result<bool> {
+        let mut closed = false;
+        // trace!("### start processing a request ###");
+        loop {
+            match HttpRequest::parse_request(conn, poll, next_token, cgi_to_client, token) {
+                Ok(()) => {
+                    trace!("### request state is complete ###");
+                    let s_cfg = conn.s_cfg.as_ref().unwrap();
+
+                    if let Some(upload_manager) = &mut conn.upload_manager {
+                        let response = Upload::handel_upload_manager(upload_manager, s_cfg);
+                        conn.write_buffer.extend_from_slice(&response.to_bytes());
+                    }
+
+                    conn.request.finish_request();
+                    break;
+                }
+                Err(ParseError::IncompleteRequestLine) => break,
+                Err(e) => {
+                    let code = match e {
+                        ParseError::PayloadTooLarge => HTTP_PAYLOAD_TOO_LARGE,
+                        ParseError::InvalidMethod => HTTP_METHOD_NOT_ALLOWED,
+                        ParseError::HeaderTooLong => HTTP_URI_TOO_LONG,
+                        _ => HTTP_BAD_REQUEST,
+                    };
+                    let response = handle_error(code, conn.s_cfg.as_ref());
+                    closed = true;
+                    conn.write_buffer.extend_from_slice(&response.to_bytes());
+                    conn.request.finish_request();
+                    break;
+                }
+            }
+        }
+
+        if !conn.write_buffer.is_empty() || matches!(conn.action, ActiveAction::FileDownload(_, _))
+        {
+            poll.registry().reregister(
+                &mut conn.stream,
+                token,
+                Interest::READABLE | Interest::WRITABLE,
+            )?;
+        }
+        Ok(closed)
+    }
+
     pub fn parse_request<'a>(
         conn: &mut HttpConnection,
         poll: &Poll,
@@ -320,14 +344,14 @@ impl HttpRequest {
 
                     // 1. Create the OUT pair (Script Output -> Server)
                     let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
-                        return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
+                        return Ok(Some(handle_error(500, Some(&s_cfg))));
                     };
                     server_out_std.set_nonblocking(true).ok();
                     let mut server_out_mio = mio::net::UnixStream::from_std(server_out_std);
 
                     // 2. Setup Input pair (Server -> Script Input)
                     let Ok((server_in_std, script_in_std)) = UnixStream::pair() else {
-                        return Ok(Some(Server::handle_error(500, Some(&s_cfg))));
+                        return Ok(Some(handle_error(500, Some(&s_cfg))));
                     };
                     server_in_std.set_nonblocking(true).ok();
                     let mut server_in_mio = mio::net::UnixStream::from_std(server_in_std);
@@ -339,7 +363,7 @@ impl HttpRequest {
 
                     let mut cmd = Command::new(program);
                     cmd.arg(&full_script_path)
-                        .envs(Server::build_cgi_env(conn))
+                        .envs(build_cgi_env(conn))
                         .stdin(Stdio::from(script_input_file))
                         .stdout(Stdio::from(script_output_file))
                         .stderr(Stdio::inherit());
@@ -376,11 +400,11 @@ impl HttpRequest {
 
                             None
                         }
-                        Err(_) => Some(Server::handle_error(500, Some(&s_cfg))),
+                        Err(_) => Some(handle_error(500, Some(&s_cfg))),
                     }
                 } else {
                     match request.method {
-                        Method::GET => match Server::handle_get(request, r_cfg, &s_cfg) {
+                        Method::GET => match handle_get(request, r_cfg, &s_cfg) {
                             (res, ActiveAction::FileDownload(file, file_size)) => {
                                 conn.action = ActiveAction::FileDownload(file, file_size);
                                 Some(res)
@@ -394,17 +418,17 @@ impl HttpRequest {
                                 conn.action = ActiveAction::Upload(path);
                                 None
                             } else {
-                                Some(Server::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+                                Some(handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
                             }
                         }
-                        Method::DELETE => Some(Server::handle_delete(request, r_cfg, &s_cfg)),
+                        Method::DELETE => Some(handle_delete(request, r_cfg, &s_cfg)),
                     }
                 }
             }
             Err(RoutingError::MethodNotAllowed) => {
-                Some(Server::handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+                Some(handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
             }
-            Err(RoutingError::NotFound) => Some(Server::handle_error(HTTP_NOT_FOUND, Some(&s_cfg))),
+            Err(RoutingError::NotFound) => Some(handle_error(HTTP_NOT_FOUND, Some(&s_cfg))),
         };
 
         // 3. Update State based on body presence
@@ -512,7 +536,7 @@ impl HttpRequest {
                     conn.body_remaining -= to_process;
                 } else {
                     let start = conn.request.cursor;
-                    HttpRequest::execute_active_action(
+                    execute_active_action(
                         &conn.request,
                         &mut conn.upload_manager,
                         &mut conn.action,
@@ -524,7 +548,6 @@ impl HttpRequest {
                     conn.body_remaining -= to_process;
                     conn.request.buffer.drain(start..start + to_process);
                 }
-          
             }
         }
 
@@ -588,33 +611,26 @@ impl HttpRequest {
                         let available = conn.request.buffer.len();
                         let to_read = std::cmp::min(available, remaining_size);
 
-                        // 1. Drain the raw data from the network buffer ONCE
                         let data = conn.request.buffer.drain(..to_read).collect::<Vec<u8>>();
 
-                        // 2. Route the data
                         match &mut conn.action {
                             ActiveAction::Cgi { .. } => {
-                                // Push raw data to the dedicated CGI buffer
                                 conn.cgi_buffer.extend_from_slice(&data);
                             }
                             _ => {
-                                // Normal Upload handling (Uses the chunk we just drained)
-                                // Note: You may need to pass 'data' to handle_upload instead of 'buffer'
                                 if let Some(mgr) = &mut conn.upload_manager {
                                     if !conn.boundary.is_empty() {
-                                        mgr.handle_upload_3(&conn.request, &data);
+                                        mgr.upload_body_with_boundry(&conn.request, &data);
                                     } else {
-                                        mgr.handle_upload_2(&conn.request, &data);
+                                        mgr.upload_simple_body(&conn.request, &data);
                                     }
                                 }
                             }
                         }
 
-                        // 3. Update metadata
                         conn.total_body_read += to_read;
                         let new_remaining = remaining_size - to_read;
 
-                        // 4. Update Chunk State
                         if new_remaining == 0 {
                             conn.request.chunk_state = ChunkState::ReadTrailingCRLF;
                         } else {
@@ -633,7 +649,6 @@ impl HttpRequest {
                         }
                         conn.request.buffer.drain(..2);
                         conn.request.chunk_state = ChunkState::ReadSize;
-                        // Continue loop to start the next chunk size immediately
                     }
 
                     ChunkState::ReadTrailers => {
@@ -666,44 +681,7 @@ impl HttpRequest {
         Ok(true)
     }
 
-    pub fn execute_active_action<'a>(
-        request: &HttpRequest,
-        upload_manager: &mut Option<Upload>,
-        action: &mut ActiveAction,
-        start: usize,
-        to_process: usize,
-        boundary: &str,
-    ) -> Result<(), ParseError> {
-        let chunk = &request.buffer[start..start + to_process];
-        match action {
-            ActiveAction::Upload(upload_path) => {
-                if upload_manager.is_none() {
-                    let upload_path = upload_path.clone();
-                    *upload_manager = Some(Upload::new(upload_path, boundary));
-                }
-
-                if let Some(mgr) = upload_manager {
-                    if !boundary.is_empty() {
-                        mgr.handle_upload_3(&request, chunk);
-                    } else {
-                        mgr.handle_upload_2(&request, chunk);
-                    }
-                    if let UploadState::Error(code) = mgr.state {
-                        return Err(ParseError::Error(code));
-                    }
-                }
-            }
-            // ActiveAction::Cgi { in_stream, .. } => match in_stream.write(chunk) {
-            //     Ok(n) => {}
-            //     Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-            //     Err(_) => return Err(ParseError::Error(HTTP_INTERNAL_SERVER_ERROR)),
-            // },
-            // ActiveAction::Discard => {}
-            _ => {}
-        }
-
-        Ok(())
-    }
+    
 
     pub fn extract_filename(&self) -> String {
         format!(

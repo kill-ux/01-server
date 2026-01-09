@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-
-use crate::server::HTTP_NOT_FOUND;
+use crate::prelude::*;
 
 #[derive(Debug)]
 pub struct HttpResponse {
@@ -101,4 +99,103 @@ impl HttpResponse {
 
         res
     }
+}
+
+pub fn get_mime_type(extension: Option<&str>) -> &'static str {
+    match extension {
+        Some("html") | Some("htm") => "text/html",
+        Some("css") => "text/css",
+        Some("js") => "application/javascript",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("json") => "application/json",
+        Some("txt") => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+pub fn get_ext_from_content_type(content_type: &str) -> &str {
+    match content_type {
+        "application/json" => ".json",
+        "application/pdf" => ".pdf",
+        "application/xml" => ".xml",
+        "application/zip" => ".zip",
+        "audio/mpeg" => ".mp3",
+        "image/gif" => ".gif",
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/svg+xml" => ".svg",
+        "image/webp" => ".webp",
+        "text/css" => ".css",
+        "text/html" => ".html",
+        "text/javascript" => ".js",
+        "text/plain" => ".txt",
+        "video/mp4" => ".mp4",
+        _ => ".bin",
+    }
+}
+
+pub fn generate_autoindex(path: &Path, original_url: &str) -> HttpResponse {
+    let mut html = format!("<html><body><h1>Index of {}</h1><ul>", original_url);
+    if let Ok(entries) = path.read_dir() {
+        for entry in entries.flatten() {
+            if let Ok(name) = entry.file_name().into_string() {
+                html.push_str(&format!(
+                    "<li><a href=\"{}/{}\">{}</a></li>",
+                    original_url.trim_end_matches('/'),
+                    name,
+                    name
+                ));
+            }
+        }
+    }
+
+    html.push_str("</ul></body></html>");
+    HttpResponse::new(200, "OK").set_body(html.into_bytes(), "text/html")
+}
+
+pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpResponse {
+    let status_text = match code {
+        HTTP_BAD_REQUEST => "Bad Request",
+        HTTP_FORBIDDEN => "Forbidden",
+        HTTP_NOT_FOUND => "Not Found",
+        HTTP_METHOD_NOT_ALLOWED => "Method Not Allowed",
+        HTTP_PAYLOAD_TOO_LARGE => "Payload Too Large",
+        HTTP_URI_TOO_LONG => "URI Too Long",
+        HTTP_NOT_IMPLEMENTED => "Not Implemented",
+        _ => "Internal Server Error",
+    };
+
+    if let Some(cfg) = s_cfg {
+        if let Some(path_str) = cfg.error_pages.get(&code) {
+            let s_root = std::path::Path::new(&cfg.root);
+            let err_path = s_root.join(path_str.trim_start_matches('/'));
+            if let Ok(content) = fs::read(err_path) {
+                let mut res = HttpResponse::new(code, status_text).set_body(content, "text/html");
+
+                if code >= 400 && code != 404 && code != 405 {
+                    res.headers
+                        .insert("connection".to_string(), "close".to_string());
+                } else {
+                    res.headers
+                        .insert("connection".to_string(), "keep-alive".to_string());
+                }
+
+                return res;
+            }
+        }
+    }
+
+    let mut res = HttpResponse::new(code, status_text);
+
+    let body = format!("{} {}", code, status_text).into_bytes();
+    if code >= 400 && code != 404 && code != 405 {
+        res.headers
+            .insert("connection".to_string(), "close".to_string());
+    } else {
+        res.headers
+            .insert("connection".to_string(), "keep-alive".to_string());
+    }
+    res.set_body(body, "text/plain")
 }
