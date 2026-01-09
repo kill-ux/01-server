@@ -23,7 +23,7 @@ impl HttpResponse {
     }
 
     pub fn set_header(&mut self, key: &str, value: &str) -> &mut Self {
-        self.headers.insert(key.to_string(), value.to_string());
+        self.headers.insert(key.to_lowercase(), value.to_string());
         self
     }
 
@@ -44,7 +44,8 @@ impl HttpResponse {
         .into_bytes();
 
         for (key, val) in &self.headers {
-            res.extend_from_slice(format!("{}: {}\r\n", key, val).as_bytes());
+            let formatted_key = Self::to_pascal_case(key);
+            res.extend_from_slice(format!("{}: {}\r\n", formatted_key, val).as_bytes());
         }
         res.extend_from_slice(b"\r\n");
         res.extend_from_slice(&self.body);
@@ -60,11 +61,27 @@ impl HttpResponse {
 
     pub fn to_bytes_headers_only(&self) -> Vec<u8> {
         let mut res = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
+
         for (k, v) in &self.headers {
-            res.push_str(&format!("{}: {}\r\n", k, v));
+            let formatted_key = Self::to_pascal_case(k);
+            res.push_str(&format!("{}: {}\r\n", formatted_key, v));
         }
+
         res.push_str("\r\n");
         res.into_bytes()
+    }
+
+    fn to_pascal_case(s: &str) -> String {
+        s.split('-')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("-")
     }
 
     pub fn redirect(code: u16, target_url: &str) -> Self {

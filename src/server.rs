@@ -447,18 +447,24 @@ impl Server {
                     Ok(0) => {
                         if *parse_state == CgiParsingState::StreamBodyChuncked {
                             conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
+                            poll.registry().reregister(
+                                &mut conn.stream,
+                                client_token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
                         }
-
-                        conn.closed = true
+                        // conn.action = ActiveAction::None;
+                        // conn.closed = true;
                     }
                     Ok(n) => {
+                        dbg!(n);
+
+                        // FIX: Pass individual fields instead of 'conn'
                         Self::process_cgi_stdout(
-                            &mut conn.action,
+                            parse_state,
+                            header_buf,
                             &mut conn.write_buffer,
-                            &mut conn.cgi_out_token,
                             &buf[..n],
-                            client_token,
-                            poll,
                         )?;
 
                         poll.registry().reregister(
@@ -468,9 +474,7 @@ impl Server {
                         )?;
                     }
                     Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-                    Err(_) => {
-                        conn.closed = true;
-                    }
+                    Err(_) => conn.closed = true,
                 }
             }
 
@@ -487,14 +491,14 @@ impl Server {
                 }
             }
 
+            // Child process status check
             match child.try_wait() {
-                Ok(Some(_status)) => {
+                Ok(Some(status)) => {
+                    dbg!(status);
                     Self::cleanup_cgi(cgi_to_client, conn);
-                    // We don't necessarily close the client connection yet,
-                    // just transition out of the CGI state.
                     conn.action = ActiveAction::None;
                 }
-                Ok(None) => {} // Still running
+                Ok(None) => {}
                 Err(_) => conn.closed = true,
             }
         }
@@ -502,22 +506,11 @@ impl Server {
     }
 
     pub fn process_cgi_stdout(
-        action: &mut ActiveAction,
+        parse_state: &mut CgiParsingState,
+        header_buf: &mut Vec<u8>,
         write_buffer: &mut Vec<u8>,
-        cgi_out_token: &mut Option<Token>,
         new_data: &[u8],
-        _client_token: Token,
-        _poll: &Poll,
     ) -> Result<()> {
-        let (parse_state, header_buf) = match &mut action {
-            ActiveAction::Cgi {
-                parse_state,
-                header_buf,
-                ..
-            } => (parse_state, header_buf),
-            _ => return Ok(()),
-        };
-
         match parse_state {
             CgiParsingState::ReadHeaders => {
                 header_buf.extend_from_slice(new_data);
@@ -531,15 +524,15 @@ impl Server {
                     let header_bytes = header_buf[..pos].to_vec();
                     let body_start = header_buf[pos + delimiter_len..].to_vec();
 
-                    // 1. Create the Response from CGI headers
                     let (status, cgi_headers) = parse_cgi_headers(&header_bytes);
                     let mut res = HttpResponse::new(status, &HttpResponse::status_text(status));
+
+                    res.headers.remove("Content-Length");
 
                     for (k, v) in cgi_headers {
                         res.set_header(&k, &v);
                     }
 
-                    // 2. Decide if we use Chunked Encoding
                     let is_chunked = !res.headers.contains_key("content-length");
                     if is_chunked {
                         res.set_header("transfer-encoding", "chunked");
@@ -548,20 +541,18 @@ impl Server {
                         *parse_state = CgiParsingState::StreamBody;
                     }
 
-                    // 3. Send headers to client
                     write_buffer.extend_from_slice(&res.to_bytes_headers_only());
 
-                    // 4. Send any leftover body data we read
                     if !body_start.is_empty() {
-                        Self::push_cgi_data(conn, &body_start, is_chunked);
+                        Self::push_cgi_data(write_buffer, &body_start, is_chunked);
                     }
                 }
             }
             CgiParsingState::StreamBody => {
-                conn.write_buffer.extend_from_slice(new_data);
+                write_buffer.extend_from_slice(new_data);
             }
             CgiParsingState::StreamBodyChuncked => {
-                Self::push_cgi_data(conn, new_data, true);
+                Self::push_cgi_data(write_buffer, new_data, true);
             }
         }
         Ok(())
