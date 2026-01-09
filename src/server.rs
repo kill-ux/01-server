@@ -332,7 +332,6 @@ impl Server {
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&token) {
-
             
             if !conn.cgi_buffer.is_empty() {
                 if let ActiveAction::Cgi {
