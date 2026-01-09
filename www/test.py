@@ -5,10 +5,9 @@ import sys
 integrity_hash = os.environ.get('HTTP_HOST')
 
 print("Content-Type: text/plain")
-print("Content-Length: 11")
 print("")
-print("Hello Worl")
+print("Hello World")
 sys.stdout.flush()
 
-while True:
+while True
     pass

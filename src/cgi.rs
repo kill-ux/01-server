@@ -159,8 +159,10 @@ pub fn handle_cgi_event(
         // Child process status check
         dbg!("check status");
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                dbg!("kill");
+            Ok(Some(status)) => {
+
+                if !status.success()
+
                 if let ActiveAction::Cgi { in_stream, .. } = &mut conn.action {
                     if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
                         if let Some(pipe) = in_stream.take() {
@@ -293,7 +295,7 @@ pub fn check_time_out_cgi(
 ) {
     connections.retain(|token, conn| {
         if let ActiveAction::Cgi { start_time, .. } = &conn.action {
-            if start_time.elapsed().as_secs() > TIMEOUT_CGI - 28 {
+            if start_time.elapsed().as_secs() > TIMEOUT_CGI {
                 println!("CRITICAL: CGI Process timed out (no events). Killing.");
                 force_cgi_timeout(conn, cgi_to_client);
 
@@ -312,7 +314,6 @@ pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<
         // 1. Terminate the process
         let _ = child.kill();
         let _ = child.wait(); // Prevent zombie processes
-        dbg!(&conn.action);
 
         if let ActiveAction::Cgi { parse_state, .. } = &conn.action {
             dbg!(&parse_state);
@@ -320,18 +321,14 @@ pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<
                 let end_marker = "0\r\n\r\n";
                 conn.write_buffer.extend_from_slice(end_marker.as_bytes());
             } else {
-                // We haven't sent headers yet, so we can still send a 504 error
-                let error_res = "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n";
-                conn.write_buffer.extend_from_slice(error_res.as_bytes());
+                if let Some(s_cfg) = &conn.s_cfg {
+                    let mut res = handle_error(504, Some(s_cfg));
+                    res.set_header("Connection", "close");
+                    conn.write_buffer.clear();
+                    conn.write_buffer.extend_from_slice(&res.to_bytes());
+                }
             }
         }
-
-        // if let Some(s_cfg) = &conn.s_cfg {
-        //     let mut res = handle_error(504, Some(s_cfg));
-        //     res.set_header("Connection", "close");
-        //     conn.write_buffer.clear();
-        //     conn.write_buffer.extend_from_slice(&res.to_bytes());
-        // }
 
         // 3. Update connection state
         conn.cgi_in_token = None;
