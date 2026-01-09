@@ -285,3 +285,64 @@ pub fn cleanup_cgi(cgi_to_client: &mut HashMap<Token, Token>, conn: &mut HttpCon
         cgi_to_client.remove(&t);
     }
 }
+
+pub fn check_time_out_cgi(
+    connections: &mut HashMap<Token, HttpConnection>,
+    poll: &Poll,
+    cgi_to_client: &mut HashMap<Token, Token>,
+) {
+    connections.retain(|token, conn| {
+        if let ActiveAction::Cgi { start_time, .. } = &conn.action {
+            if start_time.elapsed().as_secs() > TIMEOUT_CGI - 28 {
+                println!("CRITICAL: CGI Process timed out (no events). Killing.");
+                force_cgi_timeout(conn, cgi_to_client);
+
+                poll.registry()
+                    .reregister(&mut conn.stream, *token, Interest::WRITABLE)
+                    .ok();
+                return true;
+            }
+        }
+        true
+    });
+}
+
+pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<Token, Token>) {
+    if let ActiveAction::Cgi { ref mut child, .. } = conn.action {
+        // 1. Terminate the process
+        let _ = child.kill();
+        let _ = child.wait(); // Prevent zombie processes
+        dbg!(&conn.action);
+
+        if let ActiveAction::Cgi { parse_state, .. } = &conn.action {
+            dbg!(&parse_state);
+            if *parse_state == CgiParsingState::StreamBodyChuncked {
+                let end_marker = "0\r\n\r\n";
+                conn.write_buffer.extend_from_slice(end_marker.as_bytes());
+            } else {
+                // We haven't sent headers yet, so we can still send a 504 error
+                let error_res = "HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n";
+                conn.write_buffer.extend_from_slice(error_res.as_bytes());
+            }
+        }
+
+        // if let Some(s_cfg) = &conn.s_cfg {
+        //     let mut res = handle_error(504, Some(s_cfg));
+        //     res.set_header("Connection", "close");
+        //     conn.write_buffer.clear();
+        //     conn.write_buffer.extend_from_slice(&res.to_bytes());
+        // }
+
+        // 3. Update connection state
+        conn.cgi_in_token = None;
+        conn.cgi_out_token = None;
+        conn.cgi_buffer.clear();
+        conn.closed = true; // Flag for removal after write
+
+        // 4. Clean up the global CGI map
+        cleanup_cgi(cgi_to_client, conn);
+
+        // 5. Reset action
+        conn.action = ActiveAction::None;
+    }
+}

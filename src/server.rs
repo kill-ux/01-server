@@ -68,22 +68,9 @@ impl Server {
             //     .or(Some(std::time::Duration::from_millis(100)));
 
             // Wait for events
-            poll.poll(&mut events, Some(Duration::from_millis(100)))?;
+            poll.poll(&mut events, Some(Duration::from_secs(1)))?;
 
-            self.connections.retain(|token, conn| {
-                if let ActiveAction::Cgi { start_time, .. } = &conn.action {
-                    if start_time.elapsed().as_secs() > 15 {
-                        println!("CRITICAL: CGI Process timed out (no events). Killing.");
-                        Self::force_cgi_timeout(conn, &mut self.cgi_to_client);
-
-                        poll.registry()
-                            .reregister(&mut conn.stream, *token, Interest::WRITABLE)
-                            .ok();
-                        return true;
-                    }
-                }
-                true
-            });
+            check_time_out_cgi(&mut self.connections, &poll, &mut self.cgi_to_client);
 
             for event in events.iter() {
                 let token = event.token();
@@ -128,33 +115,6 @@ impl Server {
             // });
 
             // println!("hhhhhhhhhhhhhhh");
-        }
-    }
-
-    pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<Token, Token>) {
-        if let ActiveAction::Cgi { ref mut child, .. } = conn.action {
-            // 1. Terminate the process
-            let _ = child.kill();
-            let _ = child.wait(); // Prevent zombie processes
-
-            if let Some(s_cfg) = &conn.s_cfg {
-                let mut res = handle_error(504, Some(s_cfg));
-                res.set_header("Connection", "close");
-                conn.write_buffer.clear();
-                conn.write_buffer.extend_from_slice(&res.to_bytes());
-            }
-
-            // 3. Update connection state
-            conn.cgi_in_token = None;
-            conn.cgi_out_token = None;
-            conn.cgi_buffer.clear();
-            conn.closed = true; // Flag for removal after write
-
-            // 4. Clean up the global CGI map
-            cleanup_cgi(cgi_to_client, conn);
-
-            // 5. Reset action
-            conn.action = ActiveAction::None;
         }
     }
 
