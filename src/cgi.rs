@@ -73,6 +73,8 @@ pub fn handle_cgi_event(
     cgi_to_client: &mut HashMap<Token, Token>,
 ) -> Result<()> {
     dbg!(conn.body_remaining);
+    dbg!(event.is_readable());
+    dbg!(event.is_writable());
     if let ActiveAction::Cgi {
         out_stream,
         in_stream,
@@ -87,6 +89,7 @@ pub fn handle_cgi_event(
             match out_stream.read(&mut buf) {
                 Ok(0) => {
                     if *parse_state == CgiParsingState::StreamBodyChuncked {
+                        dbg!("write end");
                         conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
                         poll.registry().reregister(
                             &mut conn.stream,
@@ -94,6 +97,8 @@ pub fn handle_cgi_event(
                             Interest::READABLE | Interest::WRITABLE,
                         )?;
                     }
+                    conn.cgi_out_token = None;
+                    conn.cgi_in_token = None;
                     // conn.action = ActiveAction::None;
                     // conn.closed = true;
                 }
@@ -114,29 +119,35 @@ pub fn handle_cgi_event(
             }
         }
 
+        dbg!(Some(cgi_token) == conn.cgi_in_token);
+
         // SERVER -> SCRIPT (Stdin)
         if event.is_writable() && Some(cgi_token) == conn.cgi_in_token {
+            dbg!(!conn.cgi_buffer.is_empty());
             if !conn.cgi_buffer.is_empty() {
-                match in_stream.write(&conn.cgi_buffer) {
-                    Ok(n) => {
-                        dbg!("write to cgi", n);
-                        conn.cgi_buffer.drain(..n);
+                dbg!("try write data");
+                if let Some(pipe) = in_stream {
+                    match pipe.write(&conn.cgi_buffer) {
+                        Ok(n) => {
+                            dbg!("write to cgi", n);
+                            conn.cgi_buffer.drain(..n);
 
-                        if conn.cgi_buffer.len() < 65536 {
-                            poll.registry().reregister(
-                                &mut conn.stream,
-                                client_token,
-                                Interest::READABLE | Interest::WRITABLE,
-                            )?;
-                        }
+                            if conn.cgi_buffer.len() < 65536 {
+                                poll.registry().reregister(
+                                    &mut conn.stream,
+                                    client_token,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                )?;
+                            }
 
-                        if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
-                            conn.cgi_in_token = None;
-                            trace!("CGI stdin pipe closed (EOF sent)");
+                            if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
+                                conn.cgi_in_token = None;
+                                trace!("CGI stdin pipe closed (EOF sent)");
+                            }
                         }
+                        Err(e) if e.kind() != ErrorKind::WouldBlock => {}
+                        Err(_) => conn.closed = true,
                     }
-                    Err(e) if e.kind() != ErrorKind::WouldBlock => {}
-                    Err(_) => conn.closed = true,
                 }
             }
         }
@@ -146,17 +157,14 @@ pub fn handle_cgi_event(
         match child.try_wait() {
             Ok(Some(_status)) => {
                 dbg!("kill");
-
-                if *parse_state == CgiParsingState::StreamBodyChuncked {
-                    conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
-                    // Reregister client to ensure WRITABLE is active so the '0' actually gets sent
-                    poll.registry()
-                        .reregister(
-                            &mut conn.stream,
-                            client_token,
-                            Interest::READABLE | Interest::WRITABLE,
-                        )
-                        .ok();
+                if let ActiveAction::Cgi { in_stream, .. } = &mut conn.action {
+                    if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
+                        if let Some(pipe) = in_stream.take() {
+                            dbg!("SUCCESS: All bytes sent. Closing Pipe.");
+                            drop(pipe);
+                            conn.cgi_in_token = None;
+                        }
+                    }
                 }
 
                 cleanup_cgi(cgi_to_client, conn);

@@ -238,7 +238,7 @@ impl HttpRequest {
                     }
                     Ok(())
                 }
-                ParsingState::Body => HttpRequest::parse_unchunked_body(conn),
+                ParsingState::Body => HttpRequest::parse_unchunked_body(poll, conn),
                 ParsingState::ChunkedBody => match HttpRequest::parse_chunked_body(conn) {
                     Ok(true) => {
                         conn.request.state = ParsingState::Complete;
@@ -387,7 +387,7 @@ impl HttpRequest {
 
                             conn.action = ActiveAction::Cgi {
                                 out_stream: server_out_mio,
-                                in_stream: server_in_mio,
+                                in_stream: Some(server_in_mio),
                                 child,
                                 parse_state: CgiParsingState::ReadHeaders,
                                 header_buf: Vec::new(),
@@ -522,31 +522,44 @@ impl HttpRequest {
         }
     }
 
-    pub fn parse_unchunked_body(conn: &mut HttpConnection) -> core::result::Result<(), ParseError> {
+    pub fn parse_unchunked_body(
+        poll: &Poll,
+        conn: &mut HttpConnection,
+    ) -> core::result::Result<(), ParseError> {
         if let Some(_) = &conn.s_cfg {
             let available = conn.request.buffer.len() - conn.request.cursor;
             let to_process = std::cmp::min(available, conn.body_remaining);
             // let cursor = conn.request.cursor;
 
             if to_process > 0 {
-                if matches!(conn.action, ActiveAction::Cgi { .. }) {
-                    // MOVE data to CGI buffer
-                    let data = conn.request.buffer.drain(..to_process).collect::<Vec<u8>>();
-                    conn.cgi_buffer.extend_from_slice(&data);
-                    conn.body_remaining -= to_process;
-                } else {
-                    let start = conn.request.cursor;
-                    execute_active_action(
-                        &conn.request,
-                        &mut conn.upload_manager,
-                        &mut conn.action,
-                        start,
-                        to_process,
-                        &conn.boundary,
-                    )?;
+                match &mut conn.action {
+                    ActiveAction::Cgi { in_stream, .. } => {
+                        let data = conn.request.buffer.drain(..to_process).collect::<Vec<u8>>();
+                        conn.cgi_buffer.extend_from_slice(&data);
+                        conn.body_remaining -= to_process;
 
-                    conn.body_remaining -= to_process;
-                    conn.request.buffer.drain(start..start + to_process);
+                        if let Some(in_token) = conn.cgi_in_token {
+                            if let Some(pipe) = in_stream {
+                                poll.registry()
+                                    .reregister(pipe, in_token, Interest::WRITABLE)
+                                    .ok();
+                            }
+                        }
+                    }
+                    _ => {
+                        let start = conn.request.cursor;
+                        execute_active_action(
+                            &conn.request,
+                            &mut conn.upload_manager,
+                            &mut conn.action,
+                            start,
+                            to_process,
+                            &conn.boundary,
+                        )?;
+
+                        conn.body_remaining -= to_process;
+                        conn.request.buffer.drain(start..start + to_process);
+                    }
                 }
             }
         }
@@ -680,8 +693,6 @@ impl HttpRequest {
         }
         Ok(true)
     }
-
-    
 
     pub fn extract_filename(&self) -> String {
         format!(

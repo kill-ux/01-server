@@ -138,21 +138,21 @@ impl Server {
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&token) {
-            if !conn.cgi_buffer.is_empty() {
-                if let ActiveAction::Cgi {
-                    ref mut in_stream, ..
-                } = conn.action
-                {
-                    match in_stream.write(&conn.cgi_buffer) {
-                        Ok(n) => {
-                            conn.cgi_buffer.drain(..n);
-                            dbg!("drained cgi_buffer", n);
-                        }
-                        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-                        Err(_) => conn.closed = true,
-                    }
-                }
-            }
+            // if !conn.cgi_buffer.is_empty() {
+            //     if let ActiveAction::Cgi {
+            //         ref mut in_stream, ..
+            //     } = conn.action
+            //     {
+            //         match in_stream.write(&conn.cgi_buffer) {
+            //             Ok(n) => {
+            //                 conn.cgi_buffer.drain(..n);
+            //                 dbg!("drained cgi_buffer", n);
+            //             }
+            //             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+            //             Err(_) => conn.closed = true,
+            //         }
+            //     }
+            // }
 
             if !conn.closed && event.is_readable() {
                 match conn.read_data() {
@@ -168,7 +168,8 @@ impl Server {
                     Err(_) => conn.closed = true,
                 };
 
-                dbg!("we are read this bytes", conn.request.buffer.len());
+                println!("we are read this bytes {}", conn.request.buffer.len());
+                println!("our buffer cgi is => {}", conn.cgi_buffer.len());
 
                 let mut interest = Interest::READABLE;
                 if let ActiveAction::Cgi { .. } = conn.action
@@ -184,7 +185,8 @@ impl Server {
                 poll.registry()
                     .reregister(&mut conn.stream, token, interest)?;
 
-                if !conn.closed && !conn.request.buffer.is_empty() && conn.cgi_buffer.is_empty() {
+                if !conn.closed && !conn.request.buffer.is_empty() {
+                    //&& conn.cgi_buffer.is_empty()
                     dbg!("pocess request");
                     conn.closed = HttpRequest::proces_request(
                         poll,
@@ -244,7 +246,7 @@ impl Server {
                     }
                 }
             }
-            if conn.closed && conn.write_buffer.is_empty() {
+            if conn.closed && conn.write_buffer.is_empty() && conn.cgi_buffer.is_empty() {
                 // Borrow ends here, so we can remove safely below
 
                 // conn.linger_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(10000));

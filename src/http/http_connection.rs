@@ -27,7 +27,7 @@ pub enum ActiveAction {
     FileDownload(File, usize),
     Cgi {
         out_stream: mio::net::UnixStream,
-        in_stream: mio::net::UnixStream,
+        in_stream: Option<mio::net::UnixStream>,
         child: std::process::Child,
         parse_state: CgiParsingState,
         header_buf: Vec<u8>,
