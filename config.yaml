@@ -30,8 +30,8 @@ servers:
         autoindex: false
         upload_dir: uploads
 
-  - host: "127.0.0.2"
-    ports: [8082]
+  - host: "127.0.0.1"
+    ports: [8080]
     server_name: "webserver.local"
     default_server: false
     client_max_body_size: 524288 # 512KB

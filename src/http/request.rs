@@ -224,8 +224,7 @@ impl HttpRequest {
                     }
                     Err(e) => Err(e),
                 },
-                ParsingState::Complete => break,
-                ParsingState::Error => break,
+                _ => break,
             };
 
             match res {

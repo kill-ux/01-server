@@ -201,9 +201,17 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: AppConfig, poll: &Poll) -> Result<Self> {
-        let mut listeners = HashMap::new();
-        let mut next_token = 0;
+        let mut server = Self {
+            listeners: HashMap::new(),
+            connections: HashMap::new(),
+            cgi_to_client: HashMap::new(),
+            next_token: 0,
+        };
+        server.setup_listeners(config, &poll)?;
+        Ok(server)
+    }
 
+    pub fn setup_listeners(&mut self, config: AppConfig, poll: &Poll) -> Result<()> {
         info!("Initializing server listeners...");
 
         let mut groups: HashMap<(String, u16), Vec<Arc<ServerConfig>>> = HashMap::new();
@@ -221,22 +229,17 @@ impl Server {
 
         for ((host, port), config_list) in groups {
             let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
-            let token = Token(next_token);
+            let token = Token(self.next_token);
 
             let mut listener = TcpListener::bind(addr)?;
             poll.registry()
                 .register(&mut listener, token, Interest::READABLE)?;
-            listeners.insert(token, (listener, config_list));
+            self.listeners.insert(token, (listener, config_list));
 
-            next_token += 1;
+            self.next_token += 1;
         }
 
-        Ok(Self {
-            listeners,
-            connections: HashMap::new(),
-            cgi_to_client: HashMap::new(),
-            next_token: next_token + 1,
-        })
+        Ok(())
     }
 
     pub fn run(&mut self, mut poll: Poll) -> Result<()> {

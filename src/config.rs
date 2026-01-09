@@ -165,7 +165,7 @@ impl AppConfig {
 
             // 1. IP Validation
             if sync_host_fields(&mut s_cfg).is_err() {
-                errors!("Invalid IP address format: {}", s_cfg.host);
+                errors!("Invalid IP address format: {}", s_cfg.host_str);
                 is_valid = false;
             }
 
