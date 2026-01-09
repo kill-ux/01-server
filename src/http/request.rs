@@ -608,6 +608,7 @@ impl HttpRequest {
                         conn.request.chunk_state = ChunkState::ReadSize;
                         // Continue loop to start the next chunk size immediately
                     }
+
                     ChunkState::ReadTrailers => {
                         if conn.request.buffer.len() > 8192 {
                             // 8KB
@@ -665,22 +666,6 @@ impl HttpRequest {
                     }
                 }
             }
-            // ActiveAction::Cgi {
-            //     out_stream: _,
-            //     in_stream: _,
-            //     child: _,
-            // } => {
-            //     // if let Some(stdin) = &mut child.stdin {
-            //     //     match stdin.write_all(chunk) {
-            //     //         Ok(_) => {}
-            //     //         Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-            //     //         Err(_) => {
-            //     //             return Err(ParseError::Error(500));
-            //     //         }
-            //     //     }
-            //     // }
-            // }
-            ActiveAction::Discard => {}
             _ => {}
         }
 
