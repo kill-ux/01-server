@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Display},
     fs::File,
+    io::{ErrorKind, Write},
     os::{
         fd::{FromRawFd, IntoRawFd},
         unix::net::UnixStream,
@@ -19,8 +20,8 @@ use crate::{
     http::HttpResponse,
     router::RoutingError,
     server::{
-        ActiveAction, CgiParsingState, HTTP_FOUND, HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND,
-        HttpConnection, Server, Upload, UploadState,
+        ActiveAction, CgiParsingState, HTTP_FOUND, HTTP_INTERNAL_SERVER_ERROR,
+        HTTP_METHOD_NOT_ALLOWED, HTTP_NOT_FOUND, HttpConnection, Server, Upload, UploadState,
     },
 };
 
@@ -501,17 +502,24 @@ impl HttpRequest {
             if to_process > 0 {
                 let start = conn.request.cursor;
 
-                HttpRequest::execute_active_action(
-                    &conn.request,
-                    &mut conn.upload_manager,
-                    &mut conn.action,
-                    start,
-                    to_process,
-                    &conn.boundary,
-                )?;
+                match conn.action {
+                    ActiveAction::Cgi { .. } => {
+                        conn.body_remaining -= to_process;
+                    }
+                    _ => {
+                        HttpRequest::execute_active_action(
+                            &conn.request,
+                            &mut conn.upload_manager,
+                            &mut conn.action,
+                            start,
+                            to_process,
+                            &conn.boundary,
+                        )?;
 
-                conn.body_remaining -= to_process;
-                conn.request.buffer.drain(start..start + to_process);
+                        conn.body_remaining -= to_process;
+                        conn.request.buffer.drain(start..start + to_process);
+                    }
+                }
             }
         }
 
@@ -666,6 +674,12 @@ impl HttpRequest {
                     }
                 }
             }
+            // ActiveAction::Cgi { in_stream, .. } => match in_stream.write(chunk) {
+            //     Ok(n) => {}
+            //     Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+            //     Err(_) => return Err(ParseError::Error(HTTP_INTERNAL_SERVER_ERROR)),
+            // },
+            // ActiveAction::Discard => {}
             _ => {}
         }
 
