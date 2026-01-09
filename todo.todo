@@ -16,3 +16,14 @@ File saved as uploaded_1767956614432.png%
 
 
 printf "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n" | nc 127.0.0.1 8080
+
+
+
+session
+
+Step	Who	      Action
+1	    Server	  Receives request. Sees Cookie: id=123. Passes SESSION_THEME=blue as an Environment Variable to the CGI.
+2	    CGI	      Reads SESSION_THEME. Decides the user now wants "red".
+3	    CGI	      Prints X-Session-Update: theme=red to stdout.
+4	    Server	  Reads CGI stdout. Sees the X-Session-Update. Updates the HashMap in Rust memory.
+5	    Server	  Sends the final HTML to the browser.

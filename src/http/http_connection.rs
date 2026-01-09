@@ -31,6 +31,7 @@ pub enum ActiveAction {
         child: std::process::Child,
         parse_state: CgiParsingState,
         header_buf: Vec<u8>,
+        start_time: Instant
     },
     Discard,
     None,

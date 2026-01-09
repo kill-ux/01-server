@@ -391,6 +391,7 @@ impl HttpRequest {
                                 child,
                                 parse_state: CgiParsingState::ReadHeaders,
                                 header_buf: Vec::new(),
+                                start_time: Instant::now()
                             };
 
                             cgi_to_client.insert(out_token, client_token);

@@ -164,6 +164,7 @@ pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpRespons
         HTTP_PAYLOAD_TOO_LARGE => "Payload Too Large",
         HTTP_URI_TOO_LONG => "URI Too Long",
         HTTP_NOT_IMPLEMENTED => "Not Implemented",
+        GATEWAY_TIMEOUT => "GATEWAY TIMEOUT",
         _ => "Internal Server Error",
     };
 

@@ -17,6 +17,7 @@ pub use std::os::unix::fs::MetadataExt;
 pub use std::path::{Path, PathBuf};
 pub use std::sync::Arc;
 pub use std::time::Instant;
+pub use std::time::Duration;
 
 pub use std::{
     fmt::{self, Display},
@@ -54,6 +55,7 @@ pub const HTTP_URI_TOO_LONG: u16 = 414;
 // 5xx Server Errors
 pub const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
 pub const HTTP_NOT_IMPLEMENTED: u16 = 501;
+pub const GATEWAY_TIMEOUT: u16 = 504;
 
 pub const HTTP_FOUND: u16 = 302;
 pub const HTTP_CREATED: u16 = 201;

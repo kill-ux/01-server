@@ -81,8 +81,12 @@ pub fn handle_cgi_event(
         child,
         parse_state,
         header_buf,
+        start_time,
     } = &mut conn.action
     {
+        if start_time.elapsed().as_secs() > 10 {
+            dbg!("CGI TIMEOUT: Killing process");
+        }
         // SCRIPT -> SERVER (Stdout)
         if event.is_readable() && Some(cgi_token) == conn.cgi_out_token {
             let mut buf = [0u8; 4096];
