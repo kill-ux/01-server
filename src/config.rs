@@ -97,11 +97,7 @@ impl ServerConfig {
                 }
             }
         }
-
-        dbg!(&self.routes);
-
         
-
         if let Some((_, r_cfg)) = best_match {
             if method.is_allowed(&r_cfg.methods) {
                 

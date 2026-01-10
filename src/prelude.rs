@@ -67,3 +67,4 @@ pub const HTTP_CREATED: u16 = 201;
 pub const _1MB: usize = 1_024 * 1024;
 pub const MAX_READ_DATA: usize = u16::MAX as usize; // 64KB
 pub const TIMEOUT_CGI: u64 = 30;
+pub const CLEAN_UP: u64 = 60;

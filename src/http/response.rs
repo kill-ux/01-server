@@ -92,7 +92,7 @@ impl HttpResponse {
             .join("-")
     }
 
-    pub fn redirect(res: &mut HttpResponse, code: u16, target_url: &str) -> Self {
+    pub fn redirect(res: &mut HttpResponse, code: u16, target_url: &str) {
         let status_text = match code {
             301 => "Moved Permanently",
             302 => "Found",
@@ -101,13 +101,11 @@ impl HttpResponse {
             308 => "Permanent Redirect",
             _ => "Found",
         };
-
-        let mut res = HttpResponse::new(code, status_text);
+        res.status_code = code;
+        res.status_text = status_text.to_string();
         res.set_header("Location", target_url)
             .set_header("Content-Length", "0")
             .set_header("Connection", "close");
-
-        res
     }
 }
 
@@ -146,7 +144,7 @@ pub fn get_ext_from_content_type(content_type: &str) -> &str {
     }
 }
 
-pub fn generate_autoindex(res:&mut  HttpResponse,path: &Path, original_url: &str) {
+pub fn generate_autoindex(res: &mut HttpResponse, path: &Path, original_url: &str) {
     let mut html = format!("<html><body><h1>Index of {}</h1><ul>", original_url);
     if let Ok(entries) = path.read_dir() {
         for entry in entries.flatten() {
@@ -166,7 +164,7 @@ pub fn generate_autoindex(res:&mut  HttpResponse,path: &Path, original_url: &str
     res.set_body(html.into_bytes(), "text/html");
 }
 
-pub fn handle_error(res: &mut HttpResponse,code: u16, s_cfg: Option<&Arc<ServerConfig>>) {
+pub fn handle_error(res: &mut HttpResponse, code: u16, s_cfg: Option<&Arc<ServerConfig>>) {
     let status_text = match code {
         HTTP_BAD_REQUEST => "Bad Request",
         HTTP_FORBIDDEN => "Forbidden",

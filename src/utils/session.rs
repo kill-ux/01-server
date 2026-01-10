@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use std::clone;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -29,6 +28,7 @@ pub struct SessionStore {
     pub sessions: HashMap<String, Session>,
     pub ttl: u64,
     pub counter: u64,
+    pub last_cleanup: Instant,
 }
 
 impl SessionStore {
@@ -37,54 +37,38 @@ impl SessionStore {
             sessions: HashMap::new(),
             ttl,
             counter: 0,
+            last_cleanup: Instant::now(),
         }
     }
 
     pub fn cleanup(&mut self) {
         let now = current_timestamp();
         self.sessions.retain(|_, s| !s.is_expired(now));
+        self.last_cleanup = Instant::now();
     }
 
     pub fn mange_session_store(&mut self, conn: &mut HttpConnection) {
-        dbg!(&conn.request);
         let cookies_header = conn.request.headers.get("cookie");
-        // DEBUG: See what the browser sent
-        if let Some(h) = cookies_header {
-            println!("DEBUG: Received Cookie Header: {}", h);
-        }
-
-        dbg!(&cookies_header);
-
         let cookies = match cookies_header {
             Some(cks) => Cookies::parse(cks),
             None => Cookies::new(),
         };
 
-        dbg!(&cookies);
-        dbg!(&self.sessions);
-
         let mut valid_session_found = false;
 
         if let Some(id) = cookies.get("session_id") {
-            // DEBUG: See what ID we parsed
-            println!("DEBUG: Parsed Session ID from cookie: '{}'", id);
             if let Some(session) = self.sessions.get_mut(id) {
                 dbg!(session.is_expired(current_timestamp()));
                 if !session.is_expired(current_timestamp()) {
                     conn.session_id = Some(id.to_string());
                     valid_session_found = true;
-                    println!("DEBUG: Session matched and renewed!");
                 } else {
-                    println!("DEBUG: Session expired!");
                     self.sessions.remove(id);
                 }
-            } else {
-                println!("DEBUG: Session ID exists in cookie but NOT in server memory!");
             }
         }
 
         if !valid_session_found {
-            dbg!("new");
             let new_id = generate_session_id();
             self.sessions.insert(new_id.clone(), Session::new(self.ttl));
 
@@ -97,8 +81,6 @@ impl SessionStore {
             conn.response
                 .headers
                 .insert("Set-Cookie".to_string(), set_cookie);
-
-            // ADD THIS LINE:
             conn.response.set_header("Vary", "Cookie");
 
             conn.session_id = Some(new_id);

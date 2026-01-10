@@ -144,9 +144,6 @@ impl Server {
                     Err(_) => conn.closed = true,
                 };
 
-                println!("we are read this bytes {}", conn.request.buffer.len());
-                println!("our buffer cgi is => {}", conn.cgi_buffer.len());
-
                 let mut interest = Interest::READABLE;
                 if let ActiveAction::Cgi { .. } = conn.action
                     && conn.request.buffer.len() > MAX_READ_DATA

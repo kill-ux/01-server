@@ -8,6 +8,7 @@ pub fn process(server: &mut Server, poll: &Poll) {
     server.connections.retain(|token, conn| {
         // 1️⃣ Client inactivity timeout
         if now.duration_since(conn.last_activity) > CLIENT_TIMEOUT {
+            dbg!("gg");
             cleanup_connection(conn, poll);
             force_cgi_timeout(conn, &mut server.cgi_to_client);
             return false;
@@ -27,6 +28,11 @@ pub fn process(server: &mut Server, poll: &Poll) {
 
         true
     });
+
+    if server.session_store.last_cleanup.elapsed() > Duration::from_secs(CLEAN_UP) {
+        server.session_store.cleanup();
+    }
+    
 }
 fn cleanup_connection(conn: &mut HttpConnection, poll: &Poll) {
     let _ = poll.registry().deregister(&mut conn.stream);
