@@ -170,16 +170,14 @@ impl Server {
                         conn.request.buffer.len()
                     );
                 }
+                
+                
 
                 poll.registry()
                     .reregister(&mut conn.stream, token, interest)?;
 
                 if !conn.closed && !conn.request.buffer.is_empty() {
-                    //&& conn.cgi_buffer.is_empty()
-                    dbg!("pocess request");
                     conn.closed = HttpRequest::proces_request(
-                    
-                        
                         poll,
                         token,
                         &mut self.next_token,

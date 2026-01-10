@@ -87,6 +87,7 @@ impl SessionStore {
 
     pub fn mange_session_store(&mut self, conn: &mut HttpConnection) {
         let cookies_header = conn.request.headers.get("cookie");
+        dbg!(cookies_header);
         let cookies: Cookies = match cookies_header {
             Some(data) => Cookies::parse(data),
             None => Cookies::new(),

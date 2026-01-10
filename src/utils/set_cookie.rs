@@ -23,7 +23,7 @@ impl SetCookie {
     }
 
     pub fn to_header(&self) -> String {
-        let mut header = format!("Set-Cookie: {}={}", self.name, self.value);
+        let mut header = format!("{}={}", self.name, self.value);
 
         header.push_str(&format!("; Path={}", self.path));
 
