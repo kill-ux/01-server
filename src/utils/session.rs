@@ -73,8 +73,6 @@ impl SessionStore {
                 if !session.is_expired(current_timestamp()) {
                     conn.session_id = Some(id.to_string());
                     valid_session_found = true;
-                    // Refresh expiry time on activity
-                    session.expires_at = current_timestamp() + self.ttl;
                     println!("DEBUG: Session matched and renewed!");
                 } else {
                     println!("DEBUG: Session expired!");
@@ -93,14 +91,16 @@ impl SessionStore {
             let set_cookie = SetCookie::new("session_id", &new_id)
                 .max_age(self.ttl)
                 .to_header();
-            println!("before => ");
+
             conn.response = HttpResponse::new(200, &HttpResponse::status_text(200));
-            dbg!(&conn.response);
+
             conn.response
                 .headers
                 .insert("Set-Cookie".to_string(), set_cookie);
-            println!("after => ");
-            dbg!(&conn.response);
+
+            // ADD THIS LINE:
+            conn.response.set_header("Vary", "Cookie");
+
             conn.session_id = Some(new_id);
         }
     }
