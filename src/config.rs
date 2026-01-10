@@ -98,10 +98,16 @@ impl ServerConfig {
             }
         }
 
+        dbg!(&self.routes);
+
+        
+
         if let Some((_, r_cfg)) = best_match {
             if method.is_allowed(&r_cfg.methods) {
+                
                 return Ok(r_cfg);
             } else {
+                
                 return Err(RoutingError::MethodNotAllowed);
             }
         }

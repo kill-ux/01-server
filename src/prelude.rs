@@ -1,7 +1,7 @@
 pub use crate::config::{AppConfig, RouteConfig, ServerConfig};
 pub use crate::error::Result;
 pub use crate::http::*;
-
+pub use crate::utils::*;
 pub use crate::*;
 pub use mio::{
     Events, Interest, Poll, Token,

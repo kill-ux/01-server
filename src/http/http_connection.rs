@@ -19,6 +19,7 @@ pub struct HttpConnection {
     pub cgi_out_token: Option<Token>,
     pub cgi_buffer: Vec<u8>,
     pub session_id: Option<String>,
+    pub last_activity: Instant,
 }
 
 #[derive(Debug)]
@@ -57,6 +58,7 @@ impl HttpConnection {
             cgi_out_token: None,
             cgi_buffer: Vec::new(),
             session_id: None,
+            last_activity: Instant::now(),
         }
     }
 
@@ -81,9 +83,6 @@ impl HttpConnection {
         // Fallback to the first one
         Arc::clone(&self.config_list[0])
     }
-}
-
-impl HttpConnection {
     // Returns true if the connection should be closed
     pub fn read_data(&mut self) -> core::result::Result<bool, ParseError> {
         let mut buf = [0u8; READ_BUF_SIZE]; // READ_BUF_SIZE
@@ -117,5 +116,9 @@ impl HttpConnection {
             Err(e) if e.kind() == ErrorKind::WouldBlock => false,
             Err(_) => true,
         }
+    }
+
+    pub fn touch(&mut self) {
+        self.last_activity = Instant::now();
     }
 }

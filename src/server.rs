@@ -61,16 +61,9 @@ impl Server {
         );
 
         loop {
-            // let timeout = self
-            //     .connections
-            //     .values()
-            //     .filter_map(|c| c.linger_until)
-            //     .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
-            //     .min()
-            //     .or(Some(std::time::Duration::from_millis(100)));
-
             // Wait for events
             poll.poll(&mut events, Some(Duration::from_secs(1)))?;
+            timeouts::handle_timeouts(self, &poll);
 
             check_time_out_cgi(&mut self.connections, &poll, &mut self.cgi_to_client);
 
@@ -90,7 +83,6 @@ impl Server {
                         ) {
                             eprintln!("Cgi Error: {}", e);
                             conn.closed = true;
-                            // self.connections.remove(&token);
                         }
                     }
                     continue;
@@ -109,15 +101,6 @@ impl Server {
                     self.connections.remove(&token);
                 }
             }
-
-            // self.connections.retain(|_, conn| {
-            //     if let Some(deadline) = conn.linger_until {
-            //         return std::time::Instant::now() < deadline;
-            //     }
-            //     true
-            // });
-
-            // println!("hhhhhhhhhhhhhhh");
         }
     }
 
@@ -142,7 +125,12 @@ impl Server {
     }
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
+        // let conn = match self.connections.get_mut(&token) {
+        //     Some(c) => c,
+        //     None => return Ok(()),
+        // };
         if let Some(conn) = self.connections.get_mut(&token) {
+            conn.touch();
 
             if !conn.closed && event.is_readable() {
                 match conn.read_data() {
@@ -171,8 +159,6 @@ impl Server {
                         conn.request.buffer.len()
                     );
                 }
-                
-                
 
                 poll.registry()
                     .reregister(&mut conn.stream, token, interest)?;
@@ -184,7 +170,7 @@ impl Server {
                         &mut self.next_token,
                         &mut self.cgi_to_client,
                         conn,
-                        &mut self.session_store
+                        &mut self.session_store,
                     )?;
                 }
             }
@@ -232,7 +218,7 @@ impl Server {
                             &mut self.next_token,
                             &mut self.cgi_to_client,
                             conn,
-                            &mut self.session_store
+                            &mut self.session_store,
                         )?;
                     }
                 }

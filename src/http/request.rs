@@ -331,8 +331,10 @@ impl HttpRequest {
 
         // 2. Resolve Route and Set Intent
         let request = &conn.request;
+        
         let res = match s_cfg.find_route(&request.url, &request.method) {
             Ok(r_cfg) => {
+                
                 if let Some(ref redirect_url) = r_cfg.redirection {
                     HttpResponse::redirect(
                         &mut conn.response,
@@ -425,6 +427,7 @@ impl HttpRequest {
                         }
                     }
                 } else {
+                   
                     match request.method {
                         Method::GET => {
                             match handle_get(request, &mut conn.response, r_cfg, &s_cfg) {
