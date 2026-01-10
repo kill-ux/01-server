@@ -25,7 +25,7 @@ impl HttpResponse {
         self
     }
 
-    pub fn set_body(mut self, body: Vec<u8>, content_type: &str) -> Self {
+    pub fn set_body(&mut self, body: Vec<u8>, content_type: &str) -> &mut Self {
         self.headers
             .insert("Content-Length".to_string(), body.len().to_string());
         self.headers
@@ -57,6 +57,12 @@ impl HttpResponse {
         }
     }
 
+    pub fn set_status_code(&mut self, code: u16) -> &mut Self {
+        self.status_code = code;
+        self.status_text = HttpResponse::status_text(code);
+        self
+    }
+
     pub fn to_bytes_headers_only(&self) -> Vec<u8> {
         let mut res = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
 
@@ -82,7 +88,7 @@ impl HttpResponse {
             .join("-")
     }
 
-    pub fn redirect(code: u16, target_url: &str) -> Self {
+    pub fn redirect(res: &mut HttpResponse, code: u16, target_url: &str) -> Self {
         let status_text = match code {
             301 => "Moved Permanently",
             302 => "Found",
@@ -152,10 +158,12 @@ pub fn generate_autoindex(path: &Path, original_url: &str) -> HttpResponse {
     }
 
     html.push_str("</ul></body></html>");
-    HttpResponse::new(200, "OK").set_body(html.into_bytes(), "text/html")
+    let mut res = HttpResponse::new(200, "OK") ;
+    res.set_body(html.into_bytes(), "text/html");
+    res
 }
 
-pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpResponse {
+pub fn handle_error(res: &mut HttpResponse,code: u16, s_cfg: Option<&Arc<ServerConfig>>) {
     let status_text = match code {
         HTTP_BAD_REQUEST => "Bad Request",
         HTTP_FORBIDDEN => "Forbidden",
@@ -173,7 +181,7 @@ pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpRespons
             let s_root = std::path::Path::new(&cfg.root);
             let err_path = s_root.join(path_str.trim_start_matches('/'));
             if let Ok(content) = fs::read(err_path) {
-                let mut res = HttpResponse::new(code, status_text).set_body(content, "text/html");
+                res.set_status_code(code).set_body(content, "text/html");
 
                 if code >= 400 && code != 404 && code != 405 {
                     res.headers
@@ -183,12 +191,12 @@ pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpRespons
                         .insert("connection".to_string(), "keep-alive".to_string());
                 }
 
-                return res;
+                return;
             }
         }
     }
 
-    let mut res = HttpResponse::new(code, status_text);
+    res.set_status_code(code);
 
     let body = format!("{} {}", code, status_text).into_bytes();
     if code >= 400 && code != 404 && code != 405 {
@@ -198,5 +206,5 @@ pub fn handle_error(code: u16, s_cfg: Option<&Arc<ServerConfig>>) -> HttpRespons
         res.headers
             .insert("connection".to_string(), "keep-alive".to_string());
     }
-    res.set_body(body, "text/plain")
+    res.set_body(body, "text/plain");
 }

@@ -1,12 +1,11 @@
-
 use crate::prelude::*;
-
 
 #[derive(Debug)]
 pub struct HttpConnection {
     pub stream: TcpStream,
     pub write_buffer: Vec<u8>,
     pub request: HttpRequest,
+    pub response: HttpResponse,
     pub config_list: Vec<Arc<ServerConfig>>,
     pub s_cfg: Option<Arc<ServerConfig>>,
     pub action: ActiveAction,
@@ -31,12 +30,11 @@ pub enum ActiveAction {
         child: std::process::Child,
         parse_state: CgiParsingState,
         header_buf: Vec<u8>,
-        start_time: Instant
+        start_time: Instant,
     },
     Discard,
     None,
 }
-
 
 impl HttpConnection {
     pub fn new(stream: TcpStream, config_list: Vec<Arc<ServerConfig>>) -> Self {
@@ -44,6 +42,7 @@ impl HttpConnection {
             stream,
             write_buffer: Vec::new(),
             request: HttpRequest::new(),
+            response: HttpResponse::new(200, "OK"),
             upload_manager: None,
             config_list,
             s_cfg: None,
@@ -81,7 +80,6 @@ impl HttpConnection {
         Arc::clone(&self.config_list[0])
     }
 }
-
 
 impl HttpConnection {
     // Returns true if the connection should be closed

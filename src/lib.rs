@@ -7,6 +7,9 @@ pub mod cgi;
 pub mod upload;
 pub mod prelude;
 pub mod handlers;
+pub mod utils;
+
+use crate::utils::*;
 use crate::cgi::*;
 use crate::upload::*;
 use crate::handlers::*;

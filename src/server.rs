@@ -5,6 +5,7 @@ pub struct Server {
     pub connections: HashMap<Token, HttpConnection>,
     pub cgi_to_client: HashMap<Token, Token>,
     pub next_token: usize,
+    pub session_store: SessionStore,
 }
 
 impl Server {
@@ -14,6 +15,7 @@ impl Server {
             connections: HashMap::new(),
             cgi_to_client: HashMap::new(),
             next_token: 0,
+            session_store: SessionStore::new(3600),
         };
         server.setup_listeners(config, &poll)?;
         Ok(server)
@@ -140,21 +142,6 @@ impl Server {
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
         if let Some(conn) = self.connections.get_mut(&token) {
-            // if !conn.cgi_buffer.is_empty() {
-            //     if let ActiveAction::Cgi {
-            //         ref mut in_stream, ..
-            //     } = conn.action
-            //     {
-            //         match in_stream.write(&conn.cgi_buffer) {
-            //             Ok(n) => {
-            //                 conn.cgi_buffer.drain(..n);
-            //                 dbg!("drained cgi_buffer", n);
-            //             }
-            //             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
-            //             Err(_) => conn.closed = true,
-            //         }
-            //     }
-            // }
 
             if !conn.closed && event.is_readable() {
                 match conn.read_data() {
@@ -191,11 +178,14 @@ impl Server {
                     //&& conn.cgi_buffer.is_empty()
                     dbg!("pocess request");
                     conn.closed = HttpRequest::proces_request(
+                    
+                        
                         poll,
                         token,
                         &mut self.next_token,
                         &mut self.cgi_to_client,
                         conn,
+                        &mut self.session_store
                     )?;
                 }
             }
@@ -227,8 +217,6 @@ impl Server {
                         interest |= Interest::WRITABLE;
                     }
 
-                    dbg!(&interest);
-
                     poll.registry()
                         .reregister(&mut conn.stream, token, interest)?;
 
@@ -244,6 +232,7 @@ impl Server {
                             &mut self.next_token,
                             &mut self.cgi_to_client,
                             conn,
+                            &mut self.session_store
                         )?;
                     }
                 }

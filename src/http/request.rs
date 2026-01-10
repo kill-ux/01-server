@@ -169,11 +169,19 @@ impl HttpRequest {
         next_token: &mut usize,
         cgi_to_client: &mut HashMap<Token, Token>,
         conn: &mut HttpConnection,
+        session_store: &mut SessionStore,
     ) -> Result<bool> {
         let mut closed = false;
         // trace!("### start processing a request ###");
         loop {
-            match HttpRequest::parse_request(conn, poll, next_token, cgi_to_client, token) {
+            match HttpRequest::parse_request(
+                conn,
+                poll,
+                next_token,
+                cgi_to_client,
+                token,
+                session_store,
+            ) {
                 Ok(()) => {
                     trace!("### request state is complete ###");
                     let s_cfg = conn.s_cfg.as_ref().unwrap();
@@ -220,6 +228,7 @@ impl HttpRequest {
         next_token: &mut usize,
         cgi_to_client: &mut HashMap<Token, Token>,
         client_token: Token,
+        session_store: &mut SessionStore,
     ) -> core::result::Result<(), ParseError> {
         loop {
             let res = match conn.request.state {
@@ -232,7 +241,9 @@ impl HttpRequest {
                         next_token,
                         cgi_to_client,
                         client_token,
+                        session_store,
                     )? {
+                        
                         conn.write_buffer.extend_from_slice(&res.to_bytes());
                         conn.request.state = ParsingState::Complete;
                     }
@@ -273,9 +284,12 @@ impl HttpRequest {
         next_token: &mut usize,
         cgi_to_client: &mut HashMap<Token, Token>,
         client_token: Token,
+        session_store: &mut SessionStore,
     ) -> core::result::Result<Option<HttpResponse>, ParseError> {
         let s_cfg = conn.resolve_config();
         conn.s_cfg = Some(Arc::clone(&s_cfg));
+
+        session_store.mange_session_store(conn);
 
         let content_length = conn
             .request
@@ -319,6 +333,7 @@ impl HttpRequest {
             Ok(r_cfg) => {
                 if let Some(ref redirect_url) = r_cfg.redirection {
                     Some(HttpResponse::redirect(
+                        &mut conn.response,
                         r_cfg.redirect_code.unwrap_or(HTTP_FOUND),
                         redirect_url,
                     ))
@@ -391,7 +406,7 @@ impl HttpRequest {
                                 child,
                                 parse_state: CgiParsingState::ReadHeaders,
                                 header_buf: Vec::new(),
-                                start_time: Instant::now()
+                                start_time: Instant::now(),
                             };
 
                             cgi_to_client.insert(out_token, client_token);
@@ -405,7 +420,8 @@ impl HttpRequest {
                     }
                 } else {
                     match request.method {
-                        Method::GET => match handle_get(request, r_cfg, &s_cfg) {
+                        Method::GET => match handle_get(request, r_cfg, &s_cfg)
+                        {
                             (res, ActiveAction::FileDownload(file, file_size)) => {
                                 conn.action = ActiveAction::FileDownload(file, file_size);
                                 Some(res)
@@ -449,9 +465,6 @@ impl HttpRequest {
                 }
             }
         }
-
-        dbg!(&res);
-        dbg!(&conn.request.state);
 
         Ok(res)
     }
