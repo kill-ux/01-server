@@ -18,6 +18,7 @@ pub struct HttpConnection {
     pub cgi_in_token: Option<Token>,
     pub cgi_out_token: Option<Token>,
     pub cgi_buffer: Vec<u8>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,7 @@ impl HttpConnection {
             cgi_in_token: None,
             cgi_out_token: None,
             cgi_buffer: Vec::new(),
+            session_id: None,
         }
     }
 

@@ -9,7 +9,7 @@ pub enum CgiParsingState {
     StreamBodyChuncked,
 }
 
-pub fn parse_cgi_headers(bytes: &[u8]) -> (u16, Vec<(String, String)>) {
+pub fn parse_cgi_headers(bytes: &[u8], session: &mut Session) -> (u16, Vec<(String, String)>) {
     let mut status = 200;
     let mut headers = Vec::new();
     let content = String::from_utf8_lossy(bytes);
@@ -25,6 +25,12 @@ pub fn parse_cgi_headers(bytes: &[u8]) -> (u16, Vec<(String, String)>) {
                     .next()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(200);
+            } else if key == "x-session-update" {
+                if let Some((s_key, s_val)) = val.split_once('=') {
+                    session
+                        .data
+                        .insert(s_key.trim().to_string(), s_val.trim().to_string());
+                }
             } else {
                 headers.push((key, val));
             }
@@ -67,6 +73,7 @@ pub fn parse_cgi_output(raw_output: &[u8]) -> (u16, Vec<(String, String)>, Vec<u
 }
 
 pub fn handle_cgi_event(
+    session_store: &mut SessionStore,
     poll: &Poll,
     event: &Event,
     cgi_token: Token,
@@ -102,20 +109,24 @@ pub fn handle_cgi_event(
                     }
                     conn.cgi_out_token = None;
                     conn.cgi_in_token = None;
-                    // conn.action = ActiveAction::None;
-                    // conn.closed = true;
                 }
                 Ok(n) => {
-                    dbg!("read from cgi a ", n);
-
-                    // FIX: Pass individual fields instead of 'conn'
-                    process_cgi_stdout(parse_state, header_buf, &mut conn.write_buffer, &buf[..n])?;
-
-                    poll.registry().reregister(
-                        &mut conn.stream,
-                        client_token,
-                        Interest::READABLE | Interest::WRITABLE,
-                    )?;
+                    if let Some(session_id) = &conn.session_id {
+                        if let Some(session) = session_store.sessions.get_mut(session_id) {
+                            process_cgi_stdout(
+                                parse_state,
+                                header_buf,
+                                &mut conn.write_buffer,
+                                &buf[..n],
+                                session,
+                            )?;
+                            poll.registry().reregister(
+                                &mut conn.stream,
+                                client_token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
+                        }
+                    }
                 }
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
                 Err(_) => conn.closed = true,
@@ -193,7 +204,10 @@ pub fn handle_cgi_event(
     Ok(())
 }
 
-pub fn build_cgi_env(conn: &mut HttpConnection) -> HashMap<String, String> {
+pub fn build_cgi_env(
+    conn: &mut HttpConnection,
+    session_store: &mut SessionStore,
+) -> HashMap<String, String> {
     let req = &conn.request;
     let mut envs = HashMap::new();
 
@@ -222,6 +236,15 @@ pub fn build_cgi_env(conn: &mut HttpConnection) -> HashMap<String, String> {
         envs.insert(env_key, v.clone());
     }
 
+    if let Some(session_id) = &conn.session_id {
+        if let Some(session) = session_store.sessions.get(session_id) {
+            for (key, value) in &session.data {
+                let env_key = format!("SESSION_{}", key.to_uppercase());
+                envs.insert(env_key, value.clone());
+            }
+        }
+    }
+
     envs
 }
 
@@ -230,6 +253,7 @@ pub fn process_cgi_stdout(
     header_buf: &mut Vec<u8>,
     write_buffer: &mut Vec<u8>,
     new_data: &[u8],
+    session: &mut Session,
 ) -> Result<()> {
     match parse_state {
         CgiParsingState::ReadHeaders => {
@@ -244,7 +268,7 @@ pub fn process_cgi_stdout(
                 let header_bytes = header_buf[..pos].to_vec();
                 let body_start = header_buf[pos + delimiter_len..].to_vec();
 
-                let (status, cgi_headers) = parse_cgi_headers(&header_bytes);
+                let (status, cgi_headers) = parse_cgi_headers(&header_bytes, session);
                 let mut res = HttpResponse::new(status, &HttpResponse::status_text(status));
 
                 res.headers.remove("Content-Length");
@@ -335,7 +359,8 @@ pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<
                     handle_error(&mut conn.response, 504, Some(s_cfg));
                     conn.response.set_header("Connection", "close");
                     conn.write_buffer.clear();
-                    conn.write_buffer.extend_from_slice(&conn.response.to_bytes());
+                    conn.write_buffer
+                        .extend_from_slice(&conn.response.to_bytes());
                 }
             }
         }

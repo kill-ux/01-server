@@ -80,6 +80,7 @@ impl Server {
                 if let Some(&client_token) = self.cgi_to_client.get(&token) {
                     if let Some(conn) = self.connections.get_mut(&client_token) {
                         if let Err(e) = handle_cgi_event(
+                            &mut self.session_store,
                             &poll,
                             event,
                             token,

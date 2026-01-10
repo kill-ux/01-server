@@ -26,9 +26,9 @@ impl Session {
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct SessionStore {
-    sessions: HashMap<String, Session>,
-    ttl: u64,
-    counter: u64,
+    pub sessions: HashMap<String, Session>,
+    pub ttl: u64,
+    pub counter: u64,
 }
 
 impl SessionStore {
@@ -74,7 +74,7 @@ impl SessionStore {
         self.sessions.retain(|_, s| !s.is_expired(now));
     }
 
-    fn setup_new_session(&mut self, res: &mut HttpResponse) {
+    fn setup_new_session(&mut self, res: &mut HttpResponse) -> String {
         let uuid = current_timestamp().to_string();
         self.sessions.insert(uuid.clone(), Session::new(self.ttl));
 
@@ -83,27 +83,40 @@ impl SessionStore {
             .to_header();
 
         res.headers.insert("Set-Cookie".to_string(), set_cookie);
+        uuid
     }
 
     pub fn mange_session_store(&mut self, conn: &mut HttpConnection) {
         let cookies_header = conn.request.headers.get("cookie");
-        dbg!(cookies_header);
-        let cookies: Cookies = match cookies_header {
-            Some(data) => Cookies::parse(data),
-            None => Cookies::new(),
-        };
+        let cookies = cookies_header
+            .map(|h| Cookies::parse(h))
+            .unwrap_or_else(Cookies::new);
 
-        match cookies.get("session_id") {
-            Some(session_id) => match self.sessions.get(session_id) {
-                Some(session) if !session.is_expired(current_timestamp()) => {}
-                _ => {
-                    self.setup_new_session(&mut conn.response);
+        let mut valid_session_found = false;
+
+        if let Some(id) = cookies.get("session_id") {
+            if let Some(session) = self.sessions.get_mut(id) {
+                if !session.is_expired(current_timestamp()) {
+                    conn.session_id = Some(id.to_string());
+                    valid_session_found = true;
+                    // Refresh expiry time on activity
+                    session.expires_at = current_timestamp() + self.ttl;
                 }
-            },
-            _ => {
-                self.setup_new_session(&mut conn.response);
             }
-        };
+        }
+
+        if !valid_session_found {
+            let new_id = generate_session_id();
+            self.sessions.insert(new_id.clone(), Session::new(self.ttl));
+
+            let set_cookie = SetCookie::new("session_id", &new_id)
+                .max_age(self.ttl)
+                .to_header();
+            conn.response
+                .headers
+                .insert("Set-Cookie".to_string(), set_cookie);
+            conn.session_id = Some(new_id);
+        }
     }
 }
 
@@ -112,4 +125,23 @@ fn current_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+fn generate_session_id() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+
+    // Get seconds and nanos
+    let sec = now.as_secs();
+    let nano = now.subsec_nanos();
+
+    // Mix them up using bitwise operations to create four "random" segments
+    // This isn't cryptographically secure, but it's unique for a school project.
+    let part1 = nano;
+    let part2 = (nano ^ 0x55555555) >> 8;
+    let part3 = (sec & 0xFFFF) as u32;
+    let part4 = (nano << 4) ^ (sec as u32);
+
+    format!("{:08x}-{:08x}-{:04x}-{:08x}", part1, part2, part3, part4)
 }

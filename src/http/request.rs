@@ -383,7 +383,7 @@ impl HttpRequest {
 
                     let mut cmd = Command::new(program);
                     cmd.arg(&full_script_path)
-                        .envs(build_cgi_env(conn))
+                        .envs(build_cgi_env(conn, session_store))
                         .stdin(Stdio::from(script_input_file))
                         .stdout(Stdio::from(script_output_file))
                         .stderr(Stdio::inherit());
