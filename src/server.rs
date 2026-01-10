@@ -101,15 +101,6 @@ impl Server {
                     self.connections.remove(&token);
                 }
             }
-
-            // self.connections.retain(|_, conn| {
-            //     if let Some(deadline) = conn.linger_until {
-            //         return std::time::Instant::now() < deadline;
-            //     }
-            //     true
-            // });
-
-            // println!("hhhhhhhhhhhhhhh");
         }
     }
 
