@@ -34,3 +34,4 @@ print("<hr>")
 print("<a href='/dynamic_session.py'>Refresh to test persistence</a>")
 print("</body></html>")
 
+time.sleep(30)

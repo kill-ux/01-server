@@ -18,6 +18,7 @@ pub use std::path::{Path, PathBuf};
 pub use std::sync::Arc;
 pub use std::time::Duration;
 pub use std::time::Instant;
+pub use std::net::Shutdown;
 
 pub use std::{
     fmt::{self, Display},
@@ -41,6 +42,7 @@ pub use crate::{
     upload::{Upload, UploadState},
 };
 
+
 pub use crate::http::{HttpRequest, PartInfo, find_subsequence, parse_part_headers};
 
 pub const READ_BUF_SIZE: usize = 4096;
@@ -52,6 +54,7 @@ pub const HTTP_METHOD_NOT_ALLOWED: u16 = 405;
 pub const HTTP_PAYLOAD_TOO_LARGE: u16 = 413;
 pub const HTTP_URI_TOO_LONG: u16 = 414;
 pub const HTTP_OK: u16 = 200;
+pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 // 5xx Server Errors
 pub const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;

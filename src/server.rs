@@ -63,9 +63,7 @@ impl Server {
         loop {
             // Wait for events
             poll.poll(&mut events, Some(Duration::from_secs(1)))?;
-            timeouts::handle_timeouts(self, &poll);
-
-            check_time_out_cgi(&mut self.connections, &poll, &mut self.cgi_to_client);
+            timeouts::process( self, &poll);
 
             for event in events.iter() {
                 let token = event.token();

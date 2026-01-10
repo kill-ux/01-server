@@ -1,21 +1,34 @@
-use std::time::{Duration, Instant};
-use std::net::Shutdown;
 
-use mio::Poll;
 
-use super::Server;
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::prelude::*;
 
-pub fn handle_timeouts(server: &mut Server, poll: &Poll) {
+pub fn process(server: &mut Server, poll: &Poll) {
     let now = Instant::now();
 
-    server.connections.retain(|_token, conn| {
+    server.connections.retain(|token, conn| {
+        // 1️⃣ Client inactivity timeout
         if now.duration_since(conn.last_activity) > CLIENT_TIMEOUT {
-            let _ = poll.registry().deregister(&mut conn.stream);
-            let _ = conn.stream.shutdown(Shutdown::Both);
-            false
-        } else {
-            true
+            cleanup_connection(conn, poll);
+            force_cgi_timeout(conn, &mut server.cgi_to_client);
+            return false;
         }
+
+        // CGI execution timeout
+        if let ActiveAction::Cgi { start_time, .. } = &conn.action {
+            if start_time.elapsed().as_secs() > TIMEOUT_CGI {
+
+                force_cgi_timeout(conn, &mut server.cgi_to_client);
+
+                poll.registry()
+                    .reregister(&mut conn.stream, *token, Interest::WRITABLE)
+                    .ok();
+            }
+        }
+
+        true
     });
+}
+fn cleanup_connection(conn: &mut HttpConnection, poll: &Poll) {
+    let _ = poll.registry().deregister(&mut conn.stream);
+    let _ = conn.stream.shutdown(Shutdown::Both);
 }
