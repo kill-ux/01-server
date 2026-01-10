@@ -2,9 +2,10 @@ pub use crate::prelude::*;
 
 pub fn handle_get(
     request: &HttpRequest,
+    response: &mut HttpResponse,
     r_cfg: &RouteConfig,
     s_cfg: &Arc<ServerConfig>,
-) -> (HttpResponse, ActiveAction) {
+) -> ActiveAction {
     let root = &r_cfg.root;
     let relative_path = request
         .url
@@ -17,50 +18,47 @@ pub fn handle_get(
         if r_cfg.default_file != "" {
             path.push(&r_cfg.default_file);
         } else if r_cfg.autoindex {
-            return (generate_autoindex(&path, &request.url), ActiveAction::None);
+            generate_autoindex(response, &path, &request.url);
+            return ActiveAction::None;
         } else {
-            return (
-                HttpResponse::new(403, "Forbidden").set_body(
-                    b"403 Forbidden: Directory listing denied".to_vec(),
-                    "text/plain",
-                ),
-                ActiveAction::None,
+            response.set_status_code(403);
+            response.set_body(
+                b"403 Forbidden: Directory listing denied".to_vec(),
+                "text/plain",
             );
+            return ActiveAction::None;
         }
     }
 
     match File::open(&path) {
         Ok(file) => {
             let Ok(metadata) = file.metadata() else {
-                return (
-                    handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
-                    ActiveAction::None,
-                );
+                handle_error(response, HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
+                return ActiveAction::None;
             };
             let file_size = metadata.size() as usize;
             let mime_type = get_mime_type(path.extension().and_then(|s| s.to_str()));
             // conn.action = Some();
 
-            let mut res = HttpResponse::new(200, "OK");
-            res.headers
+            response.set_status_code(HTTP_OK);
+            response
+                .headers
                 .insert("Content-Length".to_string(), file_size.to_string());
-            res.headers
+            response
+                .headers
                 .insert("Content-Type".to_string(), mime_type.to_string());
-            (res, ActiveAction::FileDownload(file, file_size))
+
+            ActiveAction::FileDownload(file, file_size)
         }
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => (
-                handle_error(HTTP_NOT_FOUND, Some(s_cfg)),
-                ActiveAction::None,
-            ),
-            std::io::ErrorKind::PermissionDenied => (
-                handle_error(HTTP_FORBIDDEN, Some(s_cfg)),
-                ActiveAction::None,
-            ),
-            _ => (
-                handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
-                ActiveAction::None,
-            ),
-        },
+        Err(e) => {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => handle_error(response, HTTP_NOT_FOUND, Some(s_cfg)),
+                std::io::ErrorKind::PermissionDenied => {
+                    handle_error(response, HTTP_FORBIDDEN, Some(s_cfg))
+                }
+                _ => handle_error(response, HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
+            };
+            ActiveAction::None
+        }
     }
 }

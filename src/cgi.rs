@@ -161,9 +161,10 @@ pub fn handle_cgi_event(
             Ok(Some(status)) => {
                 if !status.success() && *parse_state == CgiParsingState::ReadHeaders {
                     errors!("CGI process exited with error status: {:?}", status);
-                    let res = handle_error(505, conn.s_cfg.as_ref());
+                    handle_error(&mut conn.response, 505, conn.s_cfg.as_ref());
                     conn.write_buffer.clear();
-                    conn.write_buffer.extend_from_slice(&res.to_bytes());
+                    conn.write_buffer
+                        .extend_from_slice(&conn.response.to_bytes());
                     conn.closed = true;
                     poll.registry().reregister(
                         &mut conn.stream,
@@ -331,10 +332,10 @@ pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<
                 conn.write_buffer.extend_from_slice(end_marker.as_bytes());
             } else {
                 if let Some(s_cfg) = &conn.s_cfg {
-                    let mut res = handle_error(504, Some(s_cfg));
-                    res.set_header("Connection", "close");
+                    handle_error(&mut conn.response, 504, Some(s_cfg));
+                    conn.response.set_header("Connection", "close");
                     conn.write_buffer.clear();
-                    conn.write_buffer.extend_from_slice(&res.to_bytes());
+                    conn.write_buffer.extend_from_slice(&conn.response.to_bytes());
                 }
             }
         }

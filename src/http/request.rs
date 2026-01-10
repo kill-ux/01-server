@@ -187,8 +187,9 @@ impl HttpRequest {
                     let s_cfg = conn.s_cfg.as_ref().unwrap();
 
                     if let Some(upload_manager) = &mut conn.upload_manager {
-                        let response = Upload::handel_upload_manager(upload_manager, s_cfg);
-                        conn.write_buffer.extend_from_slice(&response.to_bytes());
+                        Upload::handel_upload_manager(&mut conn.response, upload_manager, s_cfg);
+                        conn.write_buffer
+                            .extend_from_slice(&conn.response.to_bytes());
                     }
 
                     conn.request.finish_request();
@@ -202,9 +203,10 @@ impl HttpRequest {
                         ParseError::HeaderTooLong => HTTP_URI_TOO_LONG,
                         _ => HTTP_BAD_REQUEST,
                     };
-                    let response = handle_error(code, conn.s_cfg.as_ref());
+                    handle_error(&mut conn.response, code, conn.s_cfg.as_ref());
                     closed = true;
-                    conn.write_buffer.extend_from_slice(&response.to_bytes());
+                    conn.write_buffer
+                        .extend_from_slice(&conn.response.to_bytes());
                     conn.request.finish_request();
                     break;
                 }
@@ -235,7 +237,7 @@ impl HttpRequest {
                 ParsingState::RequestLine => conn.request.parse_request_line(),
                 ParsingState::Headers => HttpRequest::parse_headers(conn),
                 ParsingState::HeadersDone => {
-                    if let Some(res) = HttpRequest::setup_action(
+                    if HttpRequest::setup_action(
                         conn,
                         poll,
                         next_token,
@@ -243,8 +245,8 @@ impl HttpRequest {
                         client_token,
                         session_store,
                     )? {
-                        
-                        conn.write_buffer.extend_from_slice(&res.to_bytes());
+                        conn.write_buffer
+                            .extend_from_slice(&conn.response.to_bytes());
                         conn.request.state = ParsingState::Complete;
                     }
                     Ok(())
@@ -285,7 +287,7 @@ impl HttpRequest {
         cgi_to_client: &mut HashMap<Token, Token>,
         client_token: Token,
         session_store: &mut SessionStore,
-    ) -> core::result::Result<Option<HttpResponse>, ParseError> {
+    ) -> core::result::Result<bool, ParseError> {
         let s_cfg = conn.resolve_config();
         conn.s_cfg = Some(Arc::clone(&s_cfg));
 
@@ -332,11 +334,12 @@ impl HttpRequest {
         let res = match s_cfg.find_route(&request.url, &request.method) {
             Ok(r_cfg) => {
                 if let Some(ref redirect_url) = r_cfg.redirection {
-                    Some(HttpResponse::redirect(
+                    HttpResponse::redirect(
                         &mut conn.response,
                         r_cfg.redirect_code.unwrap_or(HTTP_FOUND),
                         redirect_url,
-                    ))
+                    );
+                    true
                 } else if r_cfg
                     .cgi_ext
                     .as_ref()
@@ -359,14 +362,16 @@ impl HttpRequest {
 
                     // 1. Create the OUT pair (Script Output -> Server)
                     let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
-                        return Ok(Some(handle_error(500, Some(&s_cfg))));
+                        handle_error(&mut conn.response, 500, Some(&s_cfg));
+                        return Ok(true);
                     };
                     server_out_std.set_nonblocking(true).ok();
                     let mut server_out_mio = mio::net::UnixStream::from_std(server_out_std);
 
                     // 2. Setup Input pair (Server -> Script Input)
                     let Ok((server_in_std, script_in_std)) = UnixStream::pair() else {
-                        return Ok(Some(handle_error(500, Some(&s_cfg))));
+                        handle_error(&mut conn.response, 500, Some(&s_cfg));
+                        return Ok(true);
                     };
                     server_in_std.set_nonblocking(true).ok();
                     let mut server_in_mio = mio::net::UnixStream::from_std(server_in_std);
@@ -414,42 +419,57 @@ impl HttpRequest {
 
                             dbg!("cgi running");
 
-                            None
+                            false
                         }
-                        Err(_) => Some(handle_error(500, Some(&s_cfg))),
+                        Err(_) => {
+                            handle_error(&mut conn.response, 500, Some(&s_cfg));
+                            return Ok(true);
+                        }
                     }
                 } else {
                     match request.method {
-                        Method::GET => match handle_get(request, r_cfg, &s_cfg)
-                        {
-                            (res, ActiveAction::FileDownload(file, file_size)) => {
-                                conn.action = ActiveAction::FileDownload(file, file_size);
-                                Some(res)
+                        Method::GET => {
+                            match handle_get(request, &mut conn.response, r_cfg, &s_cfg) {
+                                ActiveAction::FileDownload(file, file_size) => {
+                                    conn.action = ActiveAction::FileDownload(file, file_size);
+                                }
+                                _ => {}
                             }
-                            (res, _) => Some(res),
-                        },
+                            true
+                        }
                         Method::POST => {
-                            // Decide if we will upload to a file
                             if !r_cfg.upload_dir.is_empty() {
                                 let path = PathBuf::from(&r_cfg.root).join(&r_cfg.upload_dir);
                                 conn.action = ActiveAction::Upload(path);
-                                None
+                                false
                             } else {
-                                Some(handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+                                handle_error(
+                                    &mut conn.response,
+                                    HTTP_METHOD_NOT_ALLOWED,
+                                    Some(&s_cfg),
+                                );
+                                return Ok(true);
                             }
                         }
-                        Method::DELETE => Some(handle_delete(request, r_cfg, &s_cfg)),
+                        Method::DELETE => {
+                            handle_delete(&mut conn.response, request, r_cfg, &s_cfg);
+                            true
+                        }
                     }
                 }
             }
             Err(RoutingError::MethodNotAllowed) => {
-                Some(handle_error(HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg)))
+                handle_error(&mut conn.response, HTTP_METHOD_NOT_ALLOWED, Some(&s_cfg));
+                true
             }
-            Err(RoutingError::NotFound) => Some(handle_error(HTTP_NOT_FOUND, Some(&s_cfg))),
+            Err(RoutingError::NotFound) => {
+                handle_error(&mut conn.response, HTTP_NOT_FOUND, Some(&s_cfg));
+                true
+            }
         };
 
         // 3. Update State based on body presence
-        if res.is_none() {
+        if !res {
             if is_chunked {
                 conn.request.state = ParsingState::ChunkedBody;
             } else if content_length > 0 {
@@ -458,10 +478,9 @@ impl HttpRequest {
                 if matches!(conn.action, ActiveAction::Cgi { .. }) {
                     conn.request.state = ParsingState::Complete;
                 } else {
-                    return Ok(Some(HttpResponse::new(400, "Bad Request").set_body(
-                        b"Error: No file data provided.".to_vec(),
-                        "text/plain",
-                    )));
+                    conn.response.set_status_code(400);
+                    conn.response
+                        .set_body(b"Error: No file data provided.".to_vec(), "text/plain");
                 }
             }
         }

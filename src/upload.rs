@@ -315,9 +315,10 @@ impl Upload {
     }
 
     pub fn handel_upload_manager(
+        response: &mut HttpResponse,
         upload_manager: &mut Upload,
         s_cfg: &Arc<ServerConfig>,
-    ) -> HttpResponse {
+    ) {
         if upload_manager.boundary.is_empty() {
             if let Some(target_path) = &upload_manager.current_file_path {
                 upload_manager.saved_filenames.push(
@@ -330,26 +331,25 @@ impl Upload {
                 upload_manager.files_saved += 1;
             }
         }
-        let response = if upload_manager.saved_filenames.len() > 0 {
-            let mut res = HttpResponse::new(HTTP_CREATED, "Created");
+        if upload_manager.saved_filenames.len() > 0 {
+            // let mut res = HttpResponse::new(HTTP_CREATED, "Created");
+            response.set_status_code(HTTP_CREATED);
             if upload_manager.saved_filenames.len() == 1 {
-                res.headers.insert(
+                response.headers.insert(
                     "location".to_string(),
                     format!("/upload/{}", upload_manager.saved_filenames[0]),
                 );
-                res.set_body(
+                response.set_body(
                     format!("File saved as {}", upload_manager.saved_filenames[0]).into_bytes(),
                     "text/plain",
-                )
+                );
             } else {
                 let body_msg =
                     format!("Saved files: {}", upload_manager.saved_filenames.join(", "));
-                res.set_body(body_msg.into_bytes(), "text/plain")
+                response.set_body(body_msg.into_bytes(), "text/plain");
             }
         } else {
-            handle_error(HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg))
+            handle_error(response, HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg));
         };
-
-        response
     }
 }

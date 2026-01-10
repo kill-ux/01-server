@@ -53,6 +53,10 @@ impl HttpResponse {
     pub fn status_text(code: u16) -> String {
         match code {
             HTTP_NOT_FOUND => "NOT FOUND".to_string(),
+            HTTP_CREATED => "Created".to_string(),
+            204 => "No Content".to_string(),
+            403 => "Forbidden".to_string(),
+            400 => "Bad Request".to_string(),
             _ => "Ok".to_string(),
         }
     }
@@ -142,7 +146,7 @@ pub fn get_ext_from_content_type(content_type: &str) -> &str {
     }
 }
 
-pub fn generate_autoindex(path: &Path, original_url: &str) -> HttpResponse {
+pub fn generate_autoindex(res:&mut  HttpResponse,path: &Path, original_url: &str) {
     let mut html = format!("<html><body><h1>Index of {}</h1><ul>", original_url);
     if let Ok(entries) = path.read_dir() {
         for entry in entries.flatten() {
@@ -158,9 +162,8 @@ pub fn generate_autoindex(path: &Path, original_url: &str) -> HttpResponse {
     }
 
     html.push_str("</ul></body></html>");
-    let mut res = HttpResponse::new(200, "OK") ;
+    res.set_status_code(200);
     res.set_body(html.into_bytes(), "text/html");
-    res
 }
 
 pub fn handle_error(res: &mut HttpResponse,code: u16, s_cfg: Option<&Arc<ServerConfig>>) {

@@ -16,8 +16,8 @@ pub use std::net::SocketAddr;
 pub use std::os::unix::fs::MetadataExt;
 pub use std::path::{Path, PathBuf};
 pub use std::sync::Arc;
-pub use std::time::Instant;
 pub use std::time::Duration;
+pub use std::time::Instant;
 
 pub use std::{
     fmt::{self, Display},
@@ -51,6 +51,7 @@ pub const HTTP_NOT_FOUND: u16 = 404;
 pub const HTTP_METHOD_NOT_ALLOWED: u16 = 405;
 pub const HTTP_PAYLOAD_TOO_LARGE: u16 = 413;
 pub const HTTP_URI_TOO_LONG: u16 = 414;
+pub const HTTP_OK: u16 = 200;
 
 // 5xx Server Errors
 pub const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
