@@ -15,7 +15,7 @@ impl Server {
             connections: HashMap::new(),
             cgi_to_client: HashMap::new(),
             next_token: 0,
-            session_store: SessionStore::new(3600),
+            session_store: SessionStore::new(10),
         };
         server.setup_listeners(config, &poll)?;
         Ok(server)
@@ -225,6 +225,7 @@ impl Server {
                         info!(
                             "Write finished. Found leftover data in buffer, processing next request..."
                         );
+                        // conn.response = HttpResponse::new(HTTP_OK, &HttpResponse::status_text(HTTP_OK));
                         conn.closed = HttpRequest::proces_request(
                             poll,
                             token,

@@ -417,8 +417,6 @@ impl HttpRequest {
                             cgi_to_client.insert(out_token, client_token);
                             cgi_to_client.insert(in_token, client_token);
 
-                            dbg!("cgi running");
-
                             false
                         }
                         Err(_) => {

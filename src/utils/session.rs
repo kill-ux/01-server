@@ -40,81 +40,67 @@ impl SessionStore {
         }
     }
 
-    // pub fn get_or_create(&mut self, session_id: Option<&String>) -> (Session, bool) {
-    //     let now = current_timestamp();
-
-    //     if let Some(id) = session_id {
-    //         if let Some(session) = self.sessions.get(id) {
-    //             if !session.is_expired(now) {
-    //                 return (session.clone(), false);
-    //             }
-    //         }
-    //     }
-
-    //     // let session = self.create(now);
-    //     (session, true)
-    // }
-
-    // fn create(&mut self, now: u64) -> Session {
-    //     self.counter += 1;
-
-    //     // let id = format!("{}-{}", now, self.counter);
-
-    //     let session = Session {
-    //         expires_at: now + self.ttl,
-    //         data: HashMap::new(),
-    //     };
-
-    //     self.sessions.insert(id.clone(), session.clone());
-    //     session
-    // }
-
     pub fn cleanup(&mut self) {
         let now = current_timestamp();
         self.sessions.retain(|_, s| !s.is_expired(now));
     }
 
-    fn setup_new_session(&mut self, res: &mut HttpResponse) -> String {
-        let uuid = current_timestamp().to_string();
-        self.sessions.insert(uuid.clone(), Session::new(self.ttl));
-
-        let set_cookie = SetCookie::new("session_id", &uuid)
-            .max_age(3600)
-            .to_header();
-
-        res.headers.insert("Set-Cookie".to_string(), set_cookie);
-        uuid
-    }
-
     pub fn mange_session_store(&mut self, conn: &mut HttpConnection) {
+        dbg!(&conn.request);
         let cookies_header = conn.request.headers.get("cookie");
-        let cookies = cookies_header
-            .map(|h| Cookies::parse(h))
-            .unwrap_or_else(Cookies::new);
+        // DEBUG: See what the browser sent
+        if let Some(h) = cookies_header {
+            println!("DEBUG: Received Cookie Header: {}", h);
+        }
+
+        dbg!(&cookies_header);
+
+        let cookies = match cookies_header {
+            Some(cks) => Cookies::parse(cks),
+            None => Cookies::new(),
+        };
+
+        dbg!(&cookies);
+        dbg!(&self.sessions);
 
         let mut valid_session_found = false;
 
         if let Some(id) = cookies.get("session_id") {
+            // DEBUG: See what ID we parsed
+            println!("DEBUG: Parsed Session ID from cookie: '{}'", id);
             if let Some(session) = self.sessions.get_mut(id) {
+                dbg!(session.is_expired(current_timestamp()));
                 if !session.is_expired(current_timestamp()) {
                     conn.session_id = Some(id.to_string());
                     valid_session_found = true;
                     // Refresh expiry time on activity
                     session.expires_at = current_timestamp() + self.ttl;
+                    println!("DEBUG: Session matched and renewed!");
+                } else {
+                    println!("DEBUG: Session expired!");
+                    self.sessions.remove(id);
                 }
+            } else {
+                println!("DEBUG: Session ID exists in cookie but NOT in server memory!");
             }
         }
 
         if !valid_session_found {
+            dbg!("new");
             let new_id = generate_session_id();
             self.sessions.insert(new_id.clone(), Session::new(self.ttl));
 
             let set_cookie = SetCookie::new("session_id", &new_id)
                 .max_age(self.ttl)
                 .to_header();
+            println!("before => ");
+            conn.response = HttpResponse::new(200, &HttpResponse::status_text(200));
+            dbg!(&conn.response);
             conn.response
                 .headers
                 .insert("Set-Cookie".to_string(), set_cookie);
+            println!("after => ");
+            dbg!(&conn.response);
             conn.session_id = Some(new_id);
         }
     }

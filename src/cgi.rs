@@ -99,7 +99,6 @@ pub fn handle_cgi_event(
             match out_stream.read(&mut buf) {
                 Ok(0) => {
                     if *parse_state == CgiParsingState::StreamBodyChuncked {
-                        dbg!("write end");
                         conn.write_buffer.extend_from_slice(b"0\r\n\r\n");
                         poll.registry().reregister(
                             &mut conn.stream,
@@ -133,17 +132,12 @@ pub fn handle_cgi_event(
             }
         }
 
-        dbg!(Some(cgi_token) == conn.cgi_in_token);
-
         // SERVER -> SCRIPT (Stdin)
         if event.is_writable() && Some(cgi_token) == conn.cgi_in_token {
-            dbg!(!conn.cgi_buffer.is_empty());
             if !conn.cgi_buffer.is_empty() {
-                dbg!("try write data");
                 if let Some(pipe) = in_stream {
                     match pipe.write(&conn.cgi_buffer) {
                         Ok(n) => {
-                            dbg!("write to cgi", n);
                             conn.cgi_buffer.drain(..n);
 
                             if conn.cgi_buffer.len() < 65536 {
@@ -166,8 +160,6 @@ pub fn handle_cgi_event(
             }
         }
 
-        // Child process status check
-        dbg!("check status");
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() && *parse_state == CgiParsingState::ReadHeaders {
@@ -350,7 +342,6 @@ pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<
         let _ = child.wait(); // Prevent zombie processes
 
         if let ActiveAction::Cgi { parse_state, .. } = &conn.action {
-            dbg!(&parse_state);
             if *parse_state == CgiParsingState::StreamBodyChuncked {
                 let end_marker = "0\r\n\r\n";
                 conn.write_buffer.extend_from_slice(end_marker.as_bytes());
