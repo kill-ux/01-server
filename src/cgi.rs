@@ -1,3 +1,5 @@
+use proxy_log::errors;
+
 use crate::prelude::*;
 
 #[derive(Debug, PartialEq)]
@@ -72,9 +74,6 @@ pub fn handle_cgi_event(
     conn: &mut HttpConnection,
     cgi_to_client: &mut HashMap<Token, Token>,
 ) -> Result<()> {
-    dbg!(conn.body_remaining);
-    dbg!(event.is_readable());
-    dbg!(event.is_writable());
     if let ActiveAction::Cgi {
         out_stream,
         in_stream,
@@ -160,8 +159,18 @@ pub fn handle_cgi_event(
         dbg!("check status");
         match child.try_wait() {
             Ok(Some(status)) => {
-
-                if !status.success()
+                if !status.success() && *parse_state == CgiParsingState::ReadHeaders {
+                    errors!("CGI process exited with error status: {:?}", status);
+                    let res = handle_error(505, conn.s_cfg.as_ref());
+                    conn.write_buffer.clear();
+                    conn.write_buffer.extend_from_slice(&res.to_bytes());
+                    conn.closed = true;
+                    poll.registry().reregister(
+                        &mut conn.stream,
+                        client_token,
+                        Interest::READABLE | Interest::WRITABLE,
+                    )?;
+                }
 
                 if let ActiveAction::Cgi { in_stream, .. } = &mut conn.action {
                     if conn.body_remaining == 0 && conn.cgi_buffer.is_empty() {
