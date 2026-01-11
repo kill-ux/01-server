@@ -22,9 +22,6 @@ print(f"X-Session-Update: last_active={int(time.time())}")
 # 4. END HEADERS
 print("")
 
-
-time.sleep(40)
-
 # 5. OUTPUT BODY
 print("<html><body>")
 print(f"<h1>Hello, {current_user}!</h1>")
