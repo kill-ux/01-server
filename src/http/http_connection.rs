@@ -183,17 +183,17 @@ impl HttpConnection {
         session_store: &mut SessionStore,
     ) -> Result<()> {
         // 1. Fill buffer from file if needed
-        if conn.write_buffer.is_empty() {
-            if let ActiveAction::FileDownload(ref mut file, ref mut remaining) = conn.action {
-                let mut chunk = vec![0u8; 8192];
-                match file.read(&mut chunk) {
-                    Ok(0) => conn.action = ActiveAction::None,
-                    Ok(n) => {
-                        conn.write_buffer.extend_from_slice(&chunk[..n]);
-                        *remaining -= n;
-                    }
-                    Err(_) => conn.closed = true,
+        if conn.write_buffer.is_empty()
+            && let ActiveAction::FileDownload(ref mut file, ref mut remaining) = conn.action
+        {
+            let mut chunk = vec![0u8; 8192];
+            match file.read(&mut chunk) {
+                Ok(0) => conn.action = ActiveAction::None,
+                Ok(n) => {
+                    conn.write_buffer.extend_from_slice(&chunk[..n]);
+                    *remaining -= n;
                 }
+                Err(_) => conn.closed = true,
             }
         }
 
@@ -245,7 +245,6 @@ impl HttpConnection {
 
         // PIPELINING
         if !conn.request.buffer.is_empty() && conn.request.state == ParsingState::RequestLine {
-            
             info!("Write finished. Pipelined data detected, processing next request...");
 
             conn.closed = HttpRequest::proces_request(
@@ -275,9 +274,8 @@ impl HttpConnection {
 
             if let ActiveAction::Cgi { mut child, .. } = action {
                 let _ = child.kill();
-                match child.try_wait() {
-                    Ok(None) => server.zombie_purgatory.push(child),
-                    _ => {} // Reaped
+                if let Ok(None) = child.try_wait() {
+                    server.zombie_purgatory.push(child)
                 }
                 cleanup_cgi(&mut server.cgi_to_client, &mut conn);
             }

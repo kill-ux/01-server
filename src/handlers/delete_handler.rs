@@ -52,7 +52,6 @@ pub fn handle_delete(
                 ErrorKind::PermissionDenied => handle_error(response, HTTP_FORBIDDEN, Some(s_cfg)),
                 _ => handle_error(response, HTTP_INTERNAL_SERVER_ERROR, Some(s_cfg)),
             }
-            return;
         }
     }
 }

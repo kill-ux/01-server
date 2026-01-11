@@ -194,10 +194,7 @@ impl Upload {
     }
 
     fn get_current_part_path(&self, req: &HttpRequest) -> Option<PathBuf> {
-        // Use the part_info to generate the path, similar to your save_file_part logic
-        if self.part_info.filename.is_none() {
-            return None;
-        }
+        self.part_info.filename.as_ref()?;
 
         let raw_fname = self.part_info.filename.as_deref().unwrap_or("");
         let clean_name = if raw_fname.is_empty() {
@@ -241,23 +238,22 @@ impl Upload {
             .create(true)
             .append(true)
             .open(&final_path)
+            && file.write_all(data).is_ok()
         {
-            if file.write_all(data).is_ok() {
-                self.files_saved += 1;
-                self.saved_filenames.push(
-                    final_path
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
+            self.files_saved += 1;
+            self.saved_filenames.push(
+                final_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
 
         self.current_file_path = None;
     }
 
-    fn get_unique_path(directory: &PathBuf, filename: &str) -> PathBuf {
+    fn get_unique_path(directory: &Path, filename: &str) -> PathBuf {
         let mut full_path = directory.join(filename);
         let mut counter = 1;
 
@@ -319,19 +315,19 @@ impl Upload {
         upload_manager: &mut Upload,
         s_cfg: &Arc<ServerConfig>,
     ) {
-        if upload_manager.boundary.is_empty() {
-            if let Some(target_path) = &upload_manager.current_file_path {
-                upload_manager.saved_filenames.push(
-                    target_path
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-                upload_manager.files_saved += 1;
-            }
+        if upload_manager.boundary.is_empty()
+            && let Some(target_path) = &upload_manager.current_file_path
+        {
+            upload_manager.saved_filenames.push(
+                target_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            upload_manager.files_saved += 1;
         }
-        if upload_manager.saved_filenames.len() > 0 {
+        if !upload_manager.saved_filenames.is_empty() {
             // let mut res = HttpResponse::new(HTTP_CREATED, "Created");
             response.set_status_code(HTTP_CREATED);
             if upload_manager.saved_filenames.len() == 1 {

@@ -177,23 +177,23 @@ pub fn handle_error(res: &mut HttpResponse, code: u16, s_cfg: Option<&Arc<Server
         _ => "Internal Server Error",
     };
 
-    if let Some(cfg) = s_cfg {
-        if let Some(path_str) = cfg.error_pages.get(&code) {
-            let s_root = std::path::Path::new(&cfg.root);
-            let err_path = s_root.join(path_str.trim_start_matches('/'));
-            if let Ok(content) = fs::read(err_path) {
-                res.set_status_code(code).set_body(content, "text/html");
+    if let Some(cfg) = s_cfg
+        && let Some(path_str) = cfg.error_pages.get(&code)
+    {
+        let s_root = std::path::Path::new(&cfg.root);
+        let err_path = s_root.join(path_str.trim_start_matches('/'));
+        if let Ok(content) = fs::read(err_path) {
+            res.set_status_code(code).set_body(content, "text/html");
 
-                if code >= 400 && code != 404 && code != 405 {
-                    res.headers
-                        .insert("connection".to_string(), "close".to_string());
-                } else {
-                    res.headers
-                        .insert("connection".to_string(), "keep-alive".to_string());
-                }
-
-                return;
+            if code >= 400 && code != 404 && code != 405 {
+                res.headers
+                    .insert("connection".to_string(), "close".to_string());
+            } else {
+                res.headers
+                    .insert("connection".to_string(), "keep-alive".to_string());
             }
+
+            return;
         }
     }
 

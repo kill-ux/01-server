@@ -57,13 +57,13 @@ impl SessionStore {
         let mut valid_session_found = false;
 
         if let Some(id) = cookies.get("session_id") {
-            if let Some(session) = self.sessions.get_mut(id) {
-                if !session.is_expired(current_timestamp()) {
-                    conn.session_id = Some(id.to_string());
-                    valid_session_found = true;
-                } else {
-                    self.sessions.remove(id);
-                }
+            if let Some(session) = self.sessions.get_mut(id)
+                && !session.is_expired(current_timestamp())
+            {
+                conn.session_id = Some(id.to_string());
+                valid_session_found = true;
+            } else {
+                self.sessions.remove(id);
             }
         }
 
@@ -80,7 +80,6 @@ impl SessionStore {
             conn.response
                 .headers
                 .insert("Set-Cookie".to_string(), set_cookie);
-
 
             conn.response
                 .set_header("Cache-Control", "no-cache, no-store, must-revalidate");

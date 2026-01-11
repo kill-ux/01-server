@@ -25,6 +25,7 @@ pub struct RouteConfig {
     pub cgi_path: Option<String>,
     pub autoindex: bool,
     pub upload_dir: String,
+    pub allowe_upload: bool,
 }
 
 impl Default for RouteConfig {
@@ -40,6 +41,7 @@ impl Default for RouteConfig {
             redirect_code: None,
             cgi_ext: None,
             cgi_path: None,
+            allowe_upload: false,
         }
     }
 }
@@ -195,15 +197,14 @@ impl AppConfig {
                     break;
                 }
 
-                if s_cfg.default_server {
-                    if let Some(existing_name) =
+                if s_cfg.default_server
+                    && let Some(existing_name) =
                         default_servers_per_port.insert(port, s_cfg.server_name.clone())
-                    {
-                        return Err(CleanError::from(format!(
-                            "Conflict: Multiple default servers on port {}. Found '{}' and '{}'",
-                            port, existing_name, s_cfg.server_name
-                        )));
-                    }
+                {
+                    return Err(CleanError::from(format!(
+                        "Conflict: Multiple default servers on port {}. Found '{}' and '{}'",
+                        port, existing_name, s_cfg.server_name
+                    )));
                 }
 
                 // 3. Virtual Host check (Duplicate server_name on same port)
@@ -261,16 +262,16 @@ impl AppConfig {
                     }
                 }
 
-                if let Some(ref ext) = route.cgi_ext {
-                    if !ext.starts_with('.') {
-                        errors!(
-                            "Route '{}': CGI extension '{}' must start with '.'",
-                            route.path,
-                            ext
-                        );
-                        is_valid = false;
-                        break;
-                    }
+                if let Some(ref ext) = route.cgi_ext
+                    && !ext.starts_with('.')
+                {
+                    errors!(
+                        "Route '{}': CGI extension '{}' must start with '.'",
+                        route.path,
+                        ext
+                    );
+                    is_valid = false;
+                    break;
                 }
 
                 if let Some(ref _url) = route.redirection {
@@ -474,8 +475,5 @@ pub fn sync_host_fields(config: &mut ServerConfig) -> Result<(), CleanError> {
 }
 
 fn can_read(path: &Path) -> bool {
-    match File::open(path) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    File::open(path).is_ok()
 }

@@ -21,7 +21,7 @@ pub fn handle_get(
     path.push(relative_path.trim_start_matches('/'));
 
     if path.is_dir() {
-        if r_cfg.default_file != "" {
+        if !r_cfg.default_file.is_empty() {
             path.push(&r_cfg.default_file);
         } else if r_cfg.autoindex {
             generate_autoindex(response, &path, &request.url);

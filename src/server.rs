@@ -19,7 +19,7 @@ impl Server {
             session_store: SessionStore::new(10),
             zombie_purgatory: Vec::new(),
         };
-        server.setup_listeners(config, &poll)?;
+        server.setup_listeners(config, poll)?;
         Ok(server)
     }
 
@@ -70,8 +70,8 @@ impl Server {
                 let token = event.token();
 
                 if let Some(&client_token) = self.cgi_to_client.get(&token) {
-                    if let Some(conn) = self.connections.get_mut(&client_token) {
-                        if let Err(e) = handle_cgi_event(
+                    if let Some(conn) = self.connections.get_mut(&client_token)
+                        && let Err(e) = handle_cgi_event(
                             &mut self.session_store,
                             &poll,
                             event,
@@ -79,10 +79,10 @@ impl Server {
                             client_token,
                             conn,
                             &mut self.cgi_to_client,
-                        ) {
-                            eprintln!("Cgi Error: {}", e);
-                            conn.closed = true;
-                        }
+                        )
+                    {
+                        eprintln!("Cgi Error: {}", e);
+                        conn.closed = true;
                     }
                     continue;
                 }
@@ -123,7 +123,6 @@ impl Server {
     }
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
-
         let conn = match self.connections.get_mut(&token) {
             Some(c) => c,
             None => return Ok(()),

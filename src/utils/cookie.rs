@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Cookies {
     values: HashMap<String, String>,
 }
 
 impl Cookies {
     pub fn new() -> Self {
-        Cookies {
-            values: HashMap::new(),
-        }
+        Cookies::default()
     }
 
     /// Parse: "a=1; b=hello"

@@ -363,7 +363,7 @@ impl<'a> Parser<'a> {
 
             let value = self.parse_value(map_indent)?;
 
-            if !map.insert(current_key, value).is_none() {
+            if map.insert(current_key, value).is_some() {
                 return Err(YamlError::DuplicateKey(current_key.to_string()));
             }
 

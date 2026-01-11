@@ -8,7 +8,7 @@ pub enum Method {
 }
 
 impl Method {
-    pub fn is_allowed(&self, allowed_methods: &Vec<String>) -> bool {
+    pub fn is_allowed(&self, allowed_methods: &[String]) -> bool {
         allowed_methods.contains(&self.to_string())
     }
 
@@ -173,45 +173,40 @@ impl HttpRequest {
     ) -> Result<bool> {
         let mut closed = false;
         trace!("### start processing a request ###");
-        loop {
-            match HttpRequest::parse_request(
-                conn,
-                poll,
-                next_token,
-                cgi_to_client,
-                token,
-                session_store,
-            ) {
-                Ok(()) => {
-                    // println!("{}",conn.request);
-                    trace!("### request state is complete ###");
-                    let s_cfg = conn.s_cfg.as_ref().unwrap();
+        match HttpRequest::parse_request(
+            conn,
+            poll,
+            next_token,
+            cgi_to_client,
+            token,
+            session_store,
+        ) {
+            Ok(()) => {
+                // println!("{}",conn.request);
+                trace!("### request state is complete ###");
+                let s_cfg = conn.s_cfg.as_ref().unwrap();
 
-                    if let Some(upload_manager) = &mut conn.upload_manager {
-                        Upload::handel_upload_manager(&mut conn.response, upload_manager, s_cfg);
-                        conn.write_buffer
-                            .extend_from_slice(&conn.response.to_bytes());
-                    }
-
-                    conn.request.finish_request();
-                    break;
-                }
-                Err(ParseError::IncompleteRequestLine) => break,
-                Err(e) => {
-                    dbg!("ehhhhhhhhhhh");
-                    let code = match e {
-                        ParseError::PayloadTooLarge => HTTP_PAYLOAD_TOO_LARGE,
-                        ParseError::InvalidMethod => HTTP_METHOD_NOT_ALLOWED,
-                        ParseError::HeaderTooLong => HTTP_URI_TOO_LONG,
-                        _ => HTTP_BAD_REQUEST,
-                    };
-                    handle_error(&mut conn.response, code, conn.s_cfg.as_ref());
-                    closed = true;
+                if let Some(upload_manager) = &mut conn.upload_manager {
+                    Upload::handel_upload_manager(&mut conn.response, upload_manager, s_cfg);
                     conn.write_buffer
                         .extend_from_slice(&conn.response.to_bytes());
-                    conn.request.finish_request();
-                    break;
                 }
+
+                conn.request.finish_request();
+            }
+            Err(ParseError::IncompleteRequestLine) => {}
+            Err(e) => {
+                let code = match e {
+                    ParseError::PayloadTooLarge => HTTP_PAYLOAD_TOO_LARGE,
+                    ParseError::InvalidMethod => HTTP_METHOD_NOT_ALLOWED,
+                    ParseError::HeaderTooLong => HTTP_URI_TOO_LONG,
+                    _ => HTTP_BAD_REQUEST,
+                };
+                handle_error(&mut conn.response, code, conn.s_cfg.as_ref());
+                closed = true;
+                conn.write_buffer
+                    .extend_from_slice(&conn.response.to_bytes());
+                conn.request.finish_request();
             }
         }
 
@@ -226,7 +221,7 @@ impl HttpRequest {
         Ok(closed)
     }
 
-    pub fn parse_request<'a>(
+    pub fn parse_request(
         conn: &mut HttpConnection,
         poll: &Poll,
         next_token: &mut usize,
@@ -333,10 +328,9 @@ impl HttpRequest {
 
         // 2. Resolve Route and Set Intent
         let request = &conn.request;
-        
+
         let res = match s_cfg.find_route(&request.url, &request.method) {
             Ok(r_cfg) => {
-                
                 if let Some(ref redirect_url) = r_cfg.redirection {
                     HttpResponse::redirect(
                         &mut conn.response,
@@ -347,28 +341,48 @@ impl HttpRequest {
                 } else if r_cfg
                     .cgi_ext
                     .as_ref()
-                    .map_or(false, |ext| request.url.ends_with(ext))
+                    .is_some_and(|ext| request.url.ends_with(ext))
                 {
-                    let program = match &r_cfg.cgi_path {
-                        Some(p) => p.as_str(),
-                        None => {
-                            let ext = r_cfg.cgi_ext.as_deref().unwrap();
+                    let full_script_path =
+                        PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
+
+                    let cmp = full_script_path.to_string_lossy().into_owned();
+
+                    let (program, args): (String, Vec<PathBuf>) = match &r_cfg.cgi_path {
+                        Some(p) if !p.is_empty() => {
+                            // We have an explicit interpreter path (e.g., /usr/bin/python3)
+                            let ext = r_cfg.cgi_ext.as_deref().unwrap_or("");
+                            let a = match ext {
+                                ".cgi" | ".bin" => {
+                                    vec![]
+                                }
+                                _ => vec![full_script_path],
+                            };
+                            (p.to_ascii_lowercase(), a)
+                        }
+                        _ => {
+                            // No interpreter path defined in config
+                            let ext = r_cfg.cgi_ext.as_deref().unwrap_or("");
+                            dbg!(&ext);
                             match ext {
-                                "py" => "python3",
-                                "sh" => "bash",
-                                _ => "python3",
+                                ".py" => ("python3".to_string(), vec![full_script_path]),
+                                ".sh" => ("bash".to_string(), vec![full_script_path]),
+                                ".cgi" | ".bin" => {
+                                    // COMPILED CASE: The script is the program itself
+                                    (cmp.to_string(), vec![])
+                                }
+                                _ => ("python3".to_string(), vec![full_script_path]),
                             }
                         }
                     };
-
-                    let full_script_path =
-                        PathBuf::from(&s_cfg.root).join(request.url.trim_start_matches('/'));
 
                     // 1. Create the OUT pair (Script Output -> Server)
                     let Ok((server_out_std, script_out_std)) = UnixStream::pair() else {
                         handle_error(&mut conn.response, 500, Some(&s_cfg));
                         return Ok(true);
                     };
+
+
                     server_out_std.set_nonblocking(true).ok();
                     let mut server_out_mio = mio::net::UnixStream::from_std(server_out_std);
 
@@ -386,7 +400,7 @@ impl HttpRequest {
                         unsafe { File::from_raw_fd(script_in_std.into_raw_fd()) };
 
                     let mut cmd = Command::new(program);
-                    cmd.arg(&full_script_path)
+                    cmd.args(args)
                         .envs(build_cgi_env(conn, session_store))
                         .stdin(Stdio::from(script_input_file))
                         .stdout(Stdio::from(script_output_file))
@@ -429,14 +443,12 @@ impl HttpRequest {
                         }
                     }
                 } else {
-                   
                     match request.method {
                         Method::GET => {
-                            match handle_get(request, &mut conn.response, r_cfg, &s_cfg) {
-                                ActiveAction::FileDownload(file, file_size) => {
-                                    conn.action = ActiveAction::FileDownload(file, file_size);
-                                }
-                                _ => {}
+                            if let ActiveAction::FileDownload(file, file_size) =
+                                handle_get(request, &mut conn.response, r_cfg, &s_cfg)
+                            {
+                                conn.action = ActiveAction::FileDownload(file, file_size);
                             }
                             true
                         }
@@ -446,11 +458,7 @@ impl HttpRequest {
                                 conn.action = ActiveAction::Upload(path);
                                 false
                             } else {
-                                handle_error(
-                                    &mut conn.response,
-                                    HTTP_METHOD_NOT_ALLOWED,
-                                    Some(&s_cfg),
-                                );
+                                handle_error(&mut conn.response, HTTP_FORBIDDEN, Some(&s_cfg));
                                 return Ok(true);
                             }
                         }
@@ -477,15 +485,13 @@ impl HttpRequest {
                 conn.request.state = ParsingState::ChunkedBody;
             } else if content_length > 0 {
                 conn.request.state = ParsingState::Body;
+            } else if matches!(conn.action, ActiveAction::Cgi { .. }) {
+                conn.request.state = ParsingState::Complete;
             } else {
-                if matches!(conn.action, ActiveAction::Cgi { .. }) {
-                    conn.request.state = ParsingState::Complete;
-                } else {
-                    conn.response.set_status_code(400);
-                    conn.response
-                        .set_body(b"Error: No file data provided.".to_vec(), "text/plain");
-                    return Ok(true);
-                }
+                conn.response.set_status_code(400);
+                conn.response
+                    .set_body(b"Error: No file data provided.".to_vec(), "text/plain");
+                return Ok(true);
             }
         }
 
@@ -563,40 +569,38 @@ impl HttpRequest {
         poll: &Poll,
         conn: &mut HttpConnection,
     ) -> core::result::Result<(), ParseError> {
-        if let Some(_) = &conn.s_cfg {
-            let available = conn.request.buffer.len() - conn.request.cursor;
-            let to_process = std::cmp::min(available, conn.body_remaining);
-            // let cursor = conn.request.cursor;
+        let available = conn.request.buffer.len() - conn.request.cursor;
+        let to_process = std::cmp::min(available, conn.body_remaining);
+        // let cursor = conn.request.cursor;
 
-            if to_process > 0 {
-                match &mut conn.action {
-                    ActiveAction::Cgi { in_stream, .. } => {
-                        let data = conn.request.buffer.drain(..to_process).collect::<Vec<u8>>();
-                        conn.cgi_buffer.extend_from_slice(&data);
-                        conn.body_remaining -= to_process;
+        if to_process > 0 {
+            match &mut conn.action {
+                ActiveAction::Cgi { in_stream, .. } => {
+                    let data = conn.request.buffer.drain(..to_process).collect::<Vec<u8>>();
+                    conn.cgi_buffer.extend_from_slice(&data);
+                    conn.body_remaining -= to_process;
 
-                        if let Some(in_token) = conn.cgi_in_token {
-                            if let Some(pipe) = in_stream {
-                                poll.registry()
-                                    .reregister(pipe, in_token, Interest::WRITABLE)
-                                    .ok();
-                            }
-                        }
+                    if let Some(in_token) = conn.cgi_in_token
+                        && let Some(pipe) = in_stream
+                    {
+                        poll.registry()
+                            .reregister(pipe, in_token, Interest::WRITABLE)
+                            .ok();
                     }
-                    _ => {
-                        let start = conn.request.cursor;
-                        execute_active_action(
-                            &conn.request,
-                            &mut conn.upload_manager,
-                            &mut conn.action,
-                            start,
-                            to_process,
-                            &conn.boundary,
-                        )?;
+                }
+                _ => {
+                    let start = conn.request.cursor;
+                    execute_active_action(
+                        &conn.request,
+                        &mut conn.upload_manager,
+                        &mut conn.action,
+                        start,
+                        to_process,
+                        &conn.boundary,
+                    )?;
 
-                        conn.body_remaining -= to_process;
-                        conn.request.buffer.drain(start..start + to_process);
-                    }
+                    conn.body_remaining -= to_process;
+                    conn.request.buffer.drain(start..start + to_process);
                 }
             }
         }
@@ -709,10 +713,9 @@ impl HttpRequest {
                         match conn.request.extract_and_parse_header() {
                             Ok(Some((k, v))) => {
                                 if let Some(allowed_trailers) = conn.request.headers.get("trailer")
+                                    && allowed_trailers.to_lowercase().contains(&k)
                                 {
-                                    if allowed_trailers.to_lowercase().contains(&k) {
-                                        conn.request.trailers.insert(k, v);
-                                    }
+                                    conn.request.trailers.insert(k, v);
                                 }
                                 continue;
                             }
@@ -738,7 +741,6 @@ impl HttpRequest {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0)
-                .to_string()
         )
     }
 }

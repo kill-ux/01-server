@@ -17,18 +17,18 @@ pub fn process(server: &mut Server, poll: &Poll) {
         }
 
         // CGI execution timeout
-        if let ActiveAction::Cgi { start_time, .. } = &conn.action {
-            if start_time.elapsed().as_secs() > TIMEOUT_CGI {
-                force_cgi_timeout(
-                    conn,
-                    &mut server.cgi_to_client,
-                    &mut server.zombie_purgatory,
-                );
+        if let ActiveAction::Cgi { start_time, .. } = &conn.action
+            && start_time.elapsed().as_secs() > TIMEOUT_CGI
+        {
+            force_cgi_timeout(
+                conn,
+                &mut server.cgi_to_client,
+                &mut server.zombie_purgatory,
+            );
 
-                poll.registry()
-                    .reregister(&mut conn.stream, *token, Interest::WRITABLE)
-                    .ok();
-            }
+            poll.registry()
+                .reregister(&mut conn.stream, *token, Interest::WRITABLE)
+                .ok();
         }
 
         true
