@@ -8,6 +8,7 @@ pub use mio::{
     event::Event,
     net::{TcpListener, TcpStream},
 };
+pub use std::process::Child;
 pub use proxy_log::{info, trace};
 pub use std::collections::HashMap;
 pub use std::fs::{self, File, OpenOptions};

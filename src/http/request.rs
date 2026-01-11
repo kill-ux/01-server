@@ -172,7 +172,7 @@ impl HttpRequest {
         session_store: &mut SessionStore,
     ) -> Result<bool> {
         let mut closed = false;
-        // trace!("### start processing a request ###");
+        trace!("### start processing a request ###");
         loop {
             match HttpRequest::parse_request(
                 conn,
@@ -482,6 +482,7 @@ impl HttpRequest {
                     conn.response.set_status_code(400);
                     conn.response
                         .set_body(b"Error: No file data provided.".to_vec(), "text/plain");
+                    return Ok(true);
                 }
             }
         }

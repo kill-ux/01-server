@@ -314,58 +314,45 @@ pub fn cleanup_cgi(cgi_to_client: &mut HashMap<Token, Token>, conn: &mut HttpCon
     }
 }
 
-pub fn check_time_out_cgi(
-    connections: &mut HashMap<Token, HttpConnection>,
-    poll: &Poll,
+pub fn force_cgi_timeout(
+    conn: &mut HttpConnection,
     cgi_to_client: &mut HashMap<Token, Token>,
+    zombie_purgatory: &mut Vec<Child>,
 ) {
-    connections.retain(|token, conn| {
-        if let ActiveAction::Cgi { start_time, .. } = &conn.action {
-            if start_time.elapsed().as_secs() > TIMEOUT_CGI {
-                println!("CRITICAL: CGI Process timed out (no events). Killing.");
-                force_cgi_timeout(conn, cgi_to_client);
-
-                poll.registry()
-                    .reregister(&mut conn.stream, *token, Interest::WRITABLE)
-                    .ok();
-                return true;
-            }
-        }
-        true
-    });
-}
-
-pub fn force_cgi_timeout(conn: &mut HttpConnection, cgi_to_client: &mut HashMap<Token, Token>) {
-    if let ActiveAction::Cgi { ref mut child, .. } = conn.action {
-        // 1. Terminate the process
+    let old_action = std::mem::replace(&mut conn.action, ActiveAction::None);
+    if let ActiveAction::Cgi {
+        mut child,
+        parse_state,
+        ..
+    } = old_action
+    {
         let _ = child.kill();
-        let _ = child.wait(); // Prevent zombie processes
-
-        if let ActiveAction::Cgi { parse_state, .. } = &conn.action {
-            if *parse_state == CgiParsingState::StreamBodyChuncked {
-                let end_marker = "0\r\n\r\n";
-                conn.write_buffer.extend_from_slice(end_marker.as_bytes());
-            } else {
-                if let Some(s_cfg) = &conn.s_cfg {
-                    handle_error(&mut conn.response, 504, Some(s_cfg));
-                    conn.response.set_header("Connection", "close");
-                    conn.write_buffer.clear();
-                    conn.write_buffer
-                        .extend_from_slice(&conn.response.to_bytes());
-                }
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                zombie_purgatory.push(child);
             }
+            Err(_) => {}
         }
 
-        // 3. Update connection state
-        conn.cgi_in_token = None;
-        conn.cgi_out_token = None;
-        conn.cgi_buffer.clear();
-        conn.closed = true; // Flag for removal after write
-
-        // 4. Clean up the global CGI map
-        cleanup_cgi(cgi_to_client, conn);
-
-        // 5. Reset action
-        conn.action = ActiveAction::None;
+        if parse_state == CgiParsingState::StreamBodyChuncked {
+            let end_marker = "0\r\n\r\n";
+            conn.write_buffer.extend_from_slice(end_marker.as_bytes());
+        } else {
+            if let Some(s_cfg) = &conn.s_cfg {
+                handle_error(&mut conn.response, 504, Some(s_cfg));
+                conn.response.set_header("Connection", "close");
+                conn.write_buffer.clear();
+                conn.write_buffer
+                    .extend_from_slice(&conn.response.to_bytes());
+            }
+        }
     }
+
+    conn.cgi_in_token = None;
+    conn.cgi_out_token = None;
+    conn.cgi_buffer.clear();
+
+    // 4. Clean up the global CGI map
+    cleanup_cgi(cgi_to_client, conn);
 }
