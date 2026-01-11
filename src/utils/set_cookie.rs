@@ -35,6 +35,8 @@ impl SetCookie {
             header.push_str("; HttpOnly");
         }
 
+        header.push_str("; SameSite=Lax");
+
         header
     }
 }

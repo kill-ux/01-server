@@ -183,6 +183,7 @@ impl HttpRequest {
                 session_store,
             ) {
                 Ok(()) => {
+                    // println!("{}",conn.request);
                     trace!("### request state is complete ###");
                     let s_cfg = conn.s_cfg.as_ref().unwrap();
 
@@ -197,6 +198,7 @@ impl HttpRequest {
                 }
                 Err(ParseError::IncompleteRequestLine) => break,
                 Err(e) => {
+                    dbg!("ehhhhhhhhhhh");
                     let code = match e {
                         ParseError::PayloadTooLarge => HTTP_PAYLOAD_TOO_LARGE,
                         ParseError::InvalidMethod => HTTP_METHOD_NOT_ALLOWED,

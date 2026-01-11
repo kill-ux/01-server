@@ -63,7 +63,6 @@ impl Server {
         );
 
         loop {
-            // Wait for events
             poll.poll(&mut events, Some(Duration::from_secs(1)))?;
             timeouts::process(self, &poll);
 
@@ -97,7 +96,6 @@ impl Server {
                 // 2. Handle Existing Connection Data
                 else if let Err(e) = self.handle_connection(&poll, event, token) {
                     eprintln!("Connection Error: {}", e);
-                    // The removal is already handled inside handle_connection or here
                     self.connections.remove(&token);
                 }
             }
@@ -125,126 +123,42 @@ impl Server {
     }
 
     pub fn handle_connection(&mut self, poll: &Poll, event: &Event, token: Token) -> Result<()> {
+
         let conn = match self.connections.get_mut(&token) {
             Some(c) => c,
             None => return Ok(()),
         };
-        // if let Some(conn) = self.connections.get_mut(&token) {
         conn.touch();
 
+        // PHASE 1: Handle Incoming Data
         if !conn.closed && event.is_readable() {
-            match conn.read_data() {
-                Ok(is_eof) => conn.closed = is_eof,
-                Err(ParseError::PayloadTooLarge) => {
-                    let error_res = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    conn.write_buffer.extend_from_slice(error_res.as_bytes());
-                    conn.closed = true;
-                    poll.registry()
-                        .reregister(&mut conn.stream, token, Interest::WRITABLE)?;
-                    return Ok(());
-                }
-                Err(_) => conn.closed = true,
-            };
-
-            let mut interest = Interest::READABLE;
-            if let ActiveAction::Cgi { .. } = conn.action
-                && conn.request.buffer.len() > MAX_READ_DATA
-            {
-                interest = Interest::WRITABLE;
-                trace!(
-                    "Backpressure: Buffer full ({}), pausing socket read",
-                    conn.request.buffer.len()
-                );
-            }
-
-            poll.registry()
-                .reregister(&mut conn.stream, token, interest)?;
-
-            if !conn.closed && !conn.request.buffer.is_empty() {
-                conn.closed = HttpRequest::proces_request(
-                    poll,
-                    token,
-                    &mut self.next_token,
-                    &mut self.cgi_to_client,
-                    conn,
-                    &mut self.session_store,
-                )?;
-            }
+            HttpConnection::handle_read_phase(
+                conn,
+                poll,
+                token,
+                &mut self.next_token,
+                &mut self.cgi_to_client,
+                &mut self.session_store,
+            )?;
         }
 
-        if event.is_writable()
-            && (!conn.write_buffer.is_empty()
-                || matches!(conn.action, ActiveAction::FileDownload(_, _)))
-        {
-            if conn.write_buffer.is_empty() {
-                if let ActiveAction::FileDownload(ref mut file, ref mut remaining) = conn.action {
-                    let mut chunk = vec![0u8; 8192]; // 8KB 
-                    match file.read(&mut chunk) {
-                        Ok(0) => conn.action = ActiveAction::None,
-                        Ok(n) => {
-                            conn.write_buffer.extend_from_slice(&chunk[..n]);
-                            *remaining -= n;
-                        }
-                        Err(_) => conn.closed = true,
-                    }
-                }
-            }
-
-            conn.closed = conn.write_data() || conn.closed;
-            if !conn.closed && conn.write_buffer.is_empty() {
-                let mut interest = Interest::READABLE;
-
-                if matches!(conn.action, ActiveAction::FileDownload(_, _)) {
-                    interest |= Interest::WRITABLE;
-                }
-
-                conn.response = HttpResponse::new(HTTP_OK, &HttpResponse::status_text(HTTP_OK));
-
-                poll.registry()
-                    .reregister(&mut conn.stream, token, interest)?;
-
-                if !conn.request.buffer.is_empty()
-                    && conn.request.state == ParsingState::RequestLine
-                {
-                    info!(
-                        "Write finished. Found leftover data in buffer, processing next request..."
-                    );
-                    // conn.response = HttpResponse::new(HTTP_OK, &HttpResponse::status_text(HTTP_OK));
-                    conn.closed = HttpRequest::proces_request(
-                        poll,
-                        token,
-                        &mut self.next_token,
-                        &mut self.cgi_to_client,
-                        conn,
-                        &mut self.session_store,
-                    )?;
-                }
-            }
+        // PHASE 2: Handle Outgoing Data
+        if event.is_writable() {
+            HttpConnection::handle_write_phase(
+                conn,
+                poll,
+                token,
+                &mut self.next_token,
+                &mut self.cgi_to_client,
+                &mut self.session_store,
+            )?;
         }
-        if conn.closed && conn.write_buffer.is_empty() && conn.cgi_buffer.is_empty() {
-            // Borrow ends here, so we can remove safely below
 
-            // conn.linger_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(10000));
-        } else {
-            return Ok(()); // Keep connection alive
+        // PHASE 3: Connection Lifecycle (Keep-Alive or Close)
+        if conn.should_close() {
+            HttpConnection::terminate_connection(self, token);
         }
-        // }
-        println!("remove connection");
-        // self.connections.remove(&token);
-        if let Some(mut conn) = self.connections.remove(&token) {
-            let action = std::mem::replace(&mut conn.action, ActiveAction::None);
-            if let ActiveAction::Cgi { mut child, .. } = action {
-                let _ = child.kill();
-                match child.try_wait() {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        self.zombie_purgatory.push(child);
-                    }
-                    Err(_) => {}
-                }
-                cleanup_cgi(&mut self.cgi_to_client, &mut conn);
-            }
-        }
+
         Ok(())
     }
 }

@@ -58,7 +58,6 @@ impl SessionStore {
 
         if let Some(id) = cookies.get("session_id") {
             if let Some(session) = self.sessions.get_mut(id) {
-                dbg!(session.is_expired(current_timestamp()));
                 if !session.is_expired(current_timestamp()) {
                     conn.session_id = Some(id.to_string());
                     valid_session_found = true;
@@ -76,11 +75,17 @@ impl SessionStore {
                 .max_age(self.ttl)
                 .to_header();
 
-            conn.response = HttpResponse::new(200, &HttpResponse::status_text(200));
+            // conn.response = HttpResponse::new(200, &HttpResponse::status_text(200));
 
             conn.response
                 .headers
                 .insert("Set-Cookie".to_string(), set_cookie);
+
+
+            conn.response
+                .set_header("Cache-Control", "no-cache, no-store, must-revalidate");
+            conn.response.set_header("Pragma", "no-cache");
+            conn.response.set_header("Expires", "0");
             conn.response.set_header("Vary", "Cookie");
 
             conn.session_id = Some(new_id);
