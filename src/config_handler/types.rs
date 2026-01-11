@@ -73,22 +73,3 @@ impl Default for ServerConfig {
         }
     }
 }
-
-impl ServerConfig {
-    pub fn find_route(&self, path: &str) -> Option<&RouteConfig> {
-        let mut best_match: Option<(&String, &RouteConfig)> = None;
-        for route in &self.routes {
-            if path.starts_with(&route.path) {
-                match best_match {
-                    None => best_match = Some((&route.path, route)),
-                    Some((best_prefix, _)) => {
-                        if route.path.len() > best_prefix.len() {
-                            best_match = Some((&route.path, route));
-                        }
-                    }
-                }
-            }
-        }
-        best_match.map(|(_, route)| route)
-    }
-}

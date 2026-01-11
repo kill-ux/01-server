@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <link rel="stylesheet" href="/css/style.css">
+    <title>Rust Server - File Upload</title>
+</head>
+
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/login.py">Session Test</a>
+    </nav>
+
+    <div class="upload-container">
+        <h1>Upload File</h1>
+        <p>Testing <code>POST</code> & <code>multipart/form-data</code></p>
+
+        <form action="/upload" method="POST" enctype="multipart/form-data">
+            <div class="file-drop-area">
+                <input type="file" name="file" required>
+            </div>
+            <button type="submit" class="upload-button">Start Upload</button>
+        </form>
+
+        <p class="limit-info">
+            Max client body size: <strong>Check config.yaml</strong>
+        </p>
+    </div>
+</body>
+
+</html>

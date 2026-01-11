@@ -87,23 +87,30 @@ impl ServerConfig {
         let mut best_match: Option<(&String, &RouteConfig)> = None;
         for route in &self.routes {
             if path.starts_with(&route.path) {
-                match best_match {
-                    None => best_match = Some((&route.path, route)),
-                    Some((best_prefix, _)) => {
-                        if route.path.len() > best_prefix.len() {
-                            best_match = Some((&route.path, route));
+                let route_len = route.path.len();
+                let path_len = path.len();
+
+                let is_valid_boundary = path_len == route_len
+                    || route.path.ends_with('/')
+                    || path.as_bytes()[route_len] == b'/';
+
+                if is_valid_boundary {
+                    match best_match {
+                        None => best_match = Some((&route.path, route)),
+                        Some((best_prefix, _)) => {
+                            if route_len > best_prefix.len() {
+                                best_match = Some((&route.path, route));
+                            }
                         }
                     }
                 }
             }
         }
-        
+
         if let Some((_, r_cfg)) = best_match {
             if method.is_allowed(&r_cfg.methods) {
-                
                 return Ok(r_cfg);
             } else {
-                
                 return Err(RoutingError::MethodNotAllowed);
             }
         }

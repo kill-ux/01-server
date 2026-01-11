@@ -1,13 +1,13 @@
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-</head>
+<!DOCTYPE html>
+<html>
+<head><link rel="stylesheet" href="/css/style.css"></head>
 <body>
-    <form action="http://127.0.0.1:8080/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" multiple>
-        <button type="submit">submit</button>
-    </form>
+    <h1>Rust Server Test Suite</h1>
+    <nav>
+        <a href="/login.py">Test CGI Sessions</a> | 
+        <a href="/upload.html">Test File Upload</a> |
+        <a href="/non-existent">Test 404</a>
+    </nav>
+    <p>Server Status: Online (Mio Event Loop)</p>
 </body>
 </html>

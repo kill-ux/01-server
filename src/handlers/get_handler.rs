@@ -11,6 +11,12 @@ pub fn handle_get(
         .url
         .strip_prefix(&r_cfg.path)
         .unwrap_or(&request.url);
+
+    dbg!(&request.url);
+    dbg!(&r_cfg.path);
+    dbg!(&relative_path);
+
+
     let mut path = PathBuf::from(root);
     path.push(relative_path.trim_start_matches('/'));
 
